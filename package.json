@@ -43,7 +43,7 @@
     "README.md"
   ],
   "scripts": {
-    "start": "electron .",
+    "start": "node bin/start.js",
     "dev": "electron .",
     "server": "node server/start.js",
     "pack": "npm pack"
