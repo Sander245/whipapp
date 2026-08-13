@@ -150,6 +150,7 @@
     { id: 'fire', label: 'Fire' },
     { id: 'machine', label: 'Whipping Machine' },
     { id: 'gun', label: 'Gun' },
+    { id: 'metal', label: 'Metal (heavy)' },
   ];
   const pvGunImg = new Image();
   pvGunImg.src = 'assets/gun.png';
@@ -283,7 +284,7 @@
       const vx = (p.x - p.px) * 0.96;
       const vy = (p.y - p.py) * 0.96;
       p.px = p.x; p.py = p.y;
-      p.x += vx; p.y += vy + 0.5;
+      p.x += vx; p.y += vy + (pv.type === 'metal' ? 0.9 : 0.5);
     }
     if (pv.type === 'machine') {
       pts[0].px = pts[0].x; pts[0].py = pts[0].y;
@@ -383,7 +384,7 @@
     wctx.lineTo(pts[2].x, pts[2].y);
     wctx.stroke();
 
-    wctx.strokeStyle = colorEl.value;
+    wctx.strokeStyle = pv.type === 'metal' ? '#b8bec6' : colorEl.value;
     for (let i = 0; i < pts.length - 1; i++) {
       const t = i / Math.max(1, pts.length - 2);
       wctx.lineWidth = (5 - 2.5 * t) + (i < 2 ? 3.5 : 0);

@@ -68,7 +68,7 @@ function normalizeConfig(cfg) {
     color: /^#[0-9a-fA-F]{6}$/.test(cfg.color || '') ? cfg.color : '#000000',
     cursor: /^[\w.-]+\.png$/.test(cfg.cursor || '') ? cfg.cursor : 'default',
     muted: !!cfg.muted,
-    whip: ['normal', 'long', 'fire', 'machine', 'gun'].includes(cfg.whip) ? cfg.whip : 'normal',
+    whip: ['normal', 'long', 'fire', 'machine', 'gun', 'metal'].includes(cfg.whip) ? cfg.whip : 'normal',
     volume: typeof cfg.volume === 'number' ? Math.max(0, Math.min(1, cfg.volume)) : 1,
     clickThrough: !!cfg.clickThrough,
   };
