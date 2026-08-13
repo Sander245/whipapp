@@ -300,7 +300,25 @@ let machineHubX = 0, machineHubY = 0;
 let lastMachineHit = 0;
 let lastContactCrack = 0;
 let motorAudio = null;
+let myClickThrough = false;
+let manualFire = false;
+let gunAngle = 0;
+let gunFlip = false;
+let lastShot = 0;
+const bullets = [];
+let audioCtx = null;
 const cursorImgCache = {};
+
+const gunImgEl = new Image();
+gunImgEl.src = 'assets/gun.png';
+const GUN_S = 130;
+const GUN_GRIP_X = 0.24;
+const GUN_GRIP_Y = 0.61;
+const GUN_MUZZLE_X = 0.90;
+const GUN_MUZZLE_Y = 0.33;
+const GUN_KNOCK = 470;
+const GUN_COOLDOWN = 3000;
+const BULLET_SPEED = 110;
 
 function sfxVol() {
   return muted ? 0 : myVolume;
@@ -341,7 +359,7 @@ function haloFor(hex) {
   return colorLum(hex) > 0.6 ? '#333' : '#fff';
 }
 
-const WHIP_CRACK_SOUNDS = ['sounds/A.mp3', 'sounds/B.mp3', 'sounds/C.mp3', 'sounds/D.mp3', 'sounds/E.mp3'];
+const WHIP_CRACK_SOUNDS = ['A.mp3', 'B.mp3', 'C.mp3', 'D.mp3', 'E.mp3'];
 
 document.addEventListener('mousemove', e => {
   if (remoteMode) return;
@@ -362,6 +380,7 @@ function spawnWhip(mx, my) {
   segCount = P.segments;
   if (myWhipType === 'long') segCount = P.segments * 2;
   if (myWhipType === 'machine') segCount = Math.round(P.segments * P.machineSegFactor);
+  if (myWhipType === 'gun') segCount = 1;
   machineAngle = -Math.PI / 2;
   machineSpeed = P.machineBaseSpeed;
   machineHubX = mx;
@@ -424,16 +443,202 @@ const wrapPi = a => {
   return a;
 };
 
-function playCrackSound(rate) {
+const sndCache = {};
+
+function ensureAudioCtx() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+}
+
+function sndBuf(name) {
+  if (!sndCache[name]) {
+    ensureAudioCtx();
+    sndCache[name] = window.bridge.readSound(name).then(b64 => new Promise((resolve, reject) => {
+      const bin = atob(b64);
+      const ab = new ArrayBuffer(bin.length);
+      const u8 = new Uint8Array(ab);
+      for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+      audioCtx.decodeAudioData(ab, resolve, reject);
+    }));
+    sndCache[name].catch(() => { delete sndCache[name]; });
+  }
+  return sndCache[name];
+}
+
+function panFrom(xNorm) {
+  if (typeof xNorm !== 'number' || !isFinite(xNorm)) return 0;
+  return Math.max(-0.4, Math.min(0.4, (xNorm * 2 - 1) * 0.4));
+}
+
+function playSnd(name, vol, rate, pan) {
+  if (vol <= 0) return;
+  ensureAudioCtx();
+  sndBuf(name).then(buf => {
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = rate || 1;
+    const g = audioCtx.createGain();
+    g.gain.value = vol;
+    const pn = audioCtx.createStereoPanner();
+    pn.pan.value = pan || 0;
+    src.connect(g);
+    g.connect(pn);
+    pn.connect(audioCtx.destination);
+    src.start();
+  }).catch(e => {
+    console.warn('webaudio failed, falling back:', e && e.message);
+    const a = new Audio('sounds/' + name);
+    a.volume = vol;
+    a.preservesPitch = false;
+    a.playbackRate = rate || 1;
+    a.play().catch(() => {});
+  });
+}
+
+function playGunfire(xNorm) {
+  playSnd('gunfire.mp3', sfxVol(), 1, panFrom(xNorm));
+}
+
+function playThud(intensity, xNorm) {
+  const vol = sfxVol() * intensity;
+  if (vol <= 0.01) return;
+  ensureAudioCtx();
+  const t0 = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const pn = audioCtx.createStereoPanner();
+  pn.pan.value = panFrom(xNorm);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(85 + 70 * intensity, t0);
+  osc.frequency.exponentialRampToValueAtTime(42, t0 + 0.13);
+  gain.gain.setValueAtTime(Math.min(0.85, vol), t0);
+  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+  osc.connect(gain);
+  gain.connect(pn);
+  pn.connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + 0.2);
+}
+
+function drawGun(cx2, x, y, ang, flip) {
+  if (!gunImgEl.complete || !gunImgEl.naturalWidth) return;
+  cx2.save();
+  cx2.translate(x, y);
+  cx2.rotate(ang);
+  if (flip) cx2.scale(1, -1);
+  cx2.drawImage(gunImgEl, -GUN_GRIP_X * GUN_S, -GUN_GRIP_Y * GUN_S, GUN_S, GUN_S);
+  cx2.restore();
+}
+
+function gunMuzzle(x, y, ang, flip) {
+  const mx = (GUN_MUZZLE_X - GUN_GRIP_X) * GUN_S;
+  const my = (GUN_MUZZLE_Y - GUN_GRIP_Y) * GUN_S * (flip ? -1 : 1);
+  const c = Math.cos(ang);
+  const s = Math.sin(ang);
+  return { x: x + mx * c - my * s, y: y + mx * s + my * c };
+}
+
+function drawBullet(cx2, bl) {
+  const d = Math.hypot(bl.vx, bl.vy) || 1;
+  const ux = bl.vx / d;
+  const uy = bl.vy / d;
+  const trail = Math.min(110, d * 1.2);
+  cx2.save();
+  cx2.globalCompositeOperation = 'lighter';
+  cx2.lineCap = 'round';
+  const grad = cx2.createLinearGradient(bl.x, bl.y, bl.x - ux * trail, bl.y - uy * trail);
+  grad.addColorStop(0, 'rgba(255,240,190,0.95)');
+  grad.addColorStop(0.3, 'rgba(255,180,70,0.5)');
+  grad.addColorStop(1, 'rgba(255,110,20,0)');
+  cx2.strokeStyle = grad;
+  cx2.lineWidth = 7;
+  cx2.beginPath();
+  cx2.moveTo(bl.x, bl.y);
+  cx2.lineTo(bl.x - ux * trail, bl.y - uy * trail);
+  cx2.stroke();
+  cx2.strokeStyle = 'rgba(255,255,240,0.95)';
+  cx2.lineWidth = 2.5;
+  cx2.beginPath();
+  cx2.moveTo(bl.x, bl.y);
+  cx2.lineTo(bl.x - ux * trail * 0.45, bl.y - uy * trail * 0.45);
+  cx2.stroke();
+  const halo = cx2.createRadialGradient(bl.x, bl.y, 0, bl.x, bl.y, 11);
+  halo.addColorStop(0, 'rgba(255,255,220,0.9)');
+  halo.addColorStop(1, 'rgba(255,160,40,0)');
+  cx2.fillStyle = halo;
+  cx2.beginPath();
+  cx2.arc(bl.x, bl.y, 11, 0, Math.PI * 2);
+  cx2.fill();
+  cx2.restore();
+}
+
+function updateGun(now) {
+  let target = null;
+  let best = 1e12;
+  for (const c of victimCursors.values()) {
+    if (now - c.t > 2000) continue;
+    const d = (c.x - mouseX) * (c.x - mouseX) + (c.y - mouseY) * (c.y - mouseY);
+    if (d < best) { best = d; target = c; }
+  }
+  let aimed = false;
+  if (target) {
+    const want = Math.atan2(target.y - mouseY, target.x - mouseX);
+    gunAngle = wrapPi(gunAngle + wrapPi(want - gunAngle) * 0.3);
+    aimed = Math.abs(wrapPi(want - gunAngle)) < 0.12;
+  }
+  gunFlip = Math.abs(wrapPi(gunAngle)) > Math.PI / 2;
+  if (!manualFire && target && aimed && now - lastShot >= GUN_COOLDOWN) {
+    fireGunNow();
+  }
+}
+
+function fireGunNow() {
+  if (remoteMode || myWhipType !== 'gun' || !whip || dropping) return;
+  const now = Date.now();
+  if (now - lastShot < GUN_COOLDOWN) return;
+  lastShot = now;
+  const m = gunMuzzle(mouseX, mouseY, gunAngle, gunFlip);
+  bullets.push({
+    x: m.x, y: m.y,
+    px: m.x, py: m.y,
+    vx: Math.cos(gunAngle) * BULLET_SPEED,
+    vy: Math.sin(gunAngle) * BULLET_SPEED,
+    life: 240,
+  });
+  playGunfire(mouseX / W);
+  window.bridge.whipCrack(mouseX / W);
+}
+
+function updateBullets(now) {
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const bl = bullets[i];
+    bl.px = bl.x;
+    bl.py = bl.y;
+    bl.x += bl.vx;
+    bl.y += bl.vy;
+    bl.life--;
+    let hit = false;
+    for (const [vid, c] of victimCursors) {
+      if (now - c.t > 2000) continue;
+      if (distToSegment(c.x, c.y, bl.px, bl.py, bl.x, bl.y) < 32) {
+        const d = Math.hypot(bl.vx, bl.vy) || 1;
+        window.bridge.sendHit(vid, bl.vx / d * GUN_KNOCK, bl.vy / d * GUN_KNOCK);
+        hit = true;
+        break;
+      }
+    }
+    if (hit || bl.life <= 0 || bl.x < -100 || bl.x > W + 100 || bl.y < -100 || bl.y > H + 100) {
+      bullets.splice(i, 1);
+    }
+  }
+}
+
+function playCrackSound(rate, xNorm) {
   const vol = sfxVol();
   if (vol <= 0) return;
   if (!WHIP_CRACK_SOUNDS.length) return;
-  const src = WHIP_CRACK_SOUNDS[Math.floor(Math.random() * WHIP_CRACK_SOUNDS.length)];
-  const a = new Audio(src);
-  a.volume = vol;
-  a.preservesPitch = false;
-  a.playbackRate = rate || 1;
-  a.play().catch(() => {});
+  const name = WHIP_CRACK_SOUNDS[Math.floor(Math.random() * WHIP_CRACK_SOUNDS.length)];
+  playSnd(name, vol, rate || 1, panFrom(xNorm));
 }
 
 function updateMotor(active, rate) {
@@ -813,8 +1018,8 @@ function whipTouches(cx, cy, from) {
 }
 
 function checkVictimHits(now) {
-  if (remoteMode || !whip || dropping) return;
-  const from = Math.max(0, whip.length - 12);
+  if (remoteMode || !whip || dropping || myWhipType === 'gun') return;
+  const from = 0;
   const minSpeed = myWhipType === 'machine' ? P.machineHitSpeed : P.hitSpeed;
   for (const [vid, c] of victimCursors) {
     if (now - c.t > 2000) continue;
@@ -840,8 +1045,8 @@ function checkVictimHits(now) {
       lastMachineHit = now;
       if (now - lastContactCrack > 450) {
         lastContactCrack = now;
-        playCrackSound();
-        window.bridge.whipCrack();
+        playCrackSound(1, c.x / W);
+        window.bridge.whipCrack(c.x / W);
       }
     }
   }
@@ -862,6 +1067,9 @@ function update() {
   const ownMachine = !remoteMode && myWhipType === 'machine' && whip && !dropping;
   if (ownMachine) anyMachine = true;
   updateMotor(anyMachine, ownMachine ? 0.85 + (machineSpeed / P.machineBaseSpeed - 1) * 0.45 : 1);
+
+  updateBullets(now);
+  if (!remoteMode && myWhipType === 'gun' && whip && !dropping) updateGun(now);
 
   if (!whip && remoteWhips.size === 0 && hadContent) {
     hadContent = false;
@@ -946,11 +1154,11 @@ function update() {
 
   checkVictimHits(now);
 
-  if (!dropping && myWhipType !== 'machine' && tipVel > P.crackSpeed) {
+  if (!dropping && myWhipType !== 'machine' && myWhipType !== 'gun' && tipVel > P.crackSpeed) {
     if (now - whipSpawnTime >= P.firstCrackGraceMs && now - lastCrackTime > P.crackCooldownMs) {
       lastCrackTime = now;
-      playCrackSound(myWhipType === 'long' ? 0.85 : 1);
-      window.bridge.whipCrack();
+      playCrackSound(myWhipType === 'long' ? 0.85 : 1, tip.x / W);
+      window.bridge.whipCrack(tip.x / W);
     }
   }
 
@@ -965,6 +1173,20 @@ function update() {
         Math.round(machineHubX / W * 10000) / 10000,
         Math.round(machineHubY / H * 10000) / 10000,
       ];
+    }
+    if (myWhipType === 'gun') {
+      state.g = [Math.round(gunAngle * 1000) / 1000, gunFlip ? 1 : 0];
+      if (bullets.length) {
+        state.b = [];
+        for (const bl of bullets) {
+          state.b.push(
+            Math.round(bl.x / W * 10000) / 10000,
+            Math.round(bl.y / H * 10000) / 10000,
+            Math.round(bl.vx * 10) / 10,
+            Math.round(bl.vy * 10) / 10
+          );
+        }
+      }
     }
     window.bridge.sendWhipState(state);
   }
@@ -1083,16 +1305,28 @@ function draw() {
     if (rw.machine && rw.pts.length) {
       drawMachine(rw.machine[0] * W, rw.machine[1] * H, rw.pts[0]);
     }
-    drawWhip(rw.pts, rw.color);
+    if (rw.type === 'gun' && rw.pts.length && rw.gun) {
+      drawGun(ctx, rw.pts[0].x, rw.pts[0].y, rw.gun[0], !!rw.gun[1]);
+      if (rw.bullets) {
+        for (const bl of rw.bullets) drawBullet(ctx, bl);
+      }
+    } else {
+      drawWhip(rw.pts, rw.color);
+    }
     drawWhipName(rw.pts, rw.name, rw.color);
   }
   if (whip) {
     if (myWhipType === 'machine' && !dropping) {
       drawMachine(machineHubX, machineHubY, whip[0]);
     }
-    drawWhip(whip, myColor);
+    if (myWhipType === 'gun') {
+      drawGun(ctx, whip[0].x, whip[0].y, gunAngle, gunFlip);
+    } else {
+      drawWhip(whip, myColor);
+    }
     drawWhipName(whip, myName, myColor);
   }
+  for (const bl of bullets) drawBullet(ctx, bl);
   drawFire();
 }
 
@@ -1112,7 +1346,7 @@ window.bridge.onSpawnWhip(() => {
   prevMouseY = mouseY;
   handleAngle = P.baseTargetAngle;
   handleAngVel = 0;
-  window.bridge.setCapture(true);
+  window.bridge.setCapture(!myClickThrough);
 });
 
 window.bridge.onDropWhip(() => {
@@ -1120,28 +1354,52 @@ window.bridge.onDropWhip(() => {
   if (whip && !dropping) dropping = true;
 });
 
-window.bridge.onSetMode((mode, color, name, mutedArg, volume, whipType) => {
+window.bridge.onSetMode((mode, color, name, mutedArg, volume, whipType, clickThrough, manualFireArg) => {
   remoteMode = (mode === 'remote');
   if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) myColor = color;
   if (typeof name === 'string') myName = name;
   muted = !!mutedArg;
   if (typeof volume === 'number') myVolume = Math.max(0, Math.min(1, volume));
-  if (['normal', 'long', 'fire', 'machine'].includes(whipType)) myWhipType = whipType;
+  if (['normal', 'long', 'fire', 'machine', 'gun'].includes(whipType)) myWhipType = whipType;
+  myClickThrough = !!clickThrough;
+  manualFire = !!manualFireArg;
+});
+
+window.bridge.onFireGun(() => {
+  fireGunNow();
+});
+
+window.bridge.onWallThud((intensity, x) => {
+  if (typeof intensity === 'number') playThud(Math.max(0, Math.min(1, intensity)), x);
 });
 
 window.bridge.onSetMuted(m => {
   muted = !!m;
 });
 
-window.bridge.onRemoteWhip((id, pts, color, type, name, machine) => {
+window.bridge.onRemoteWhip((id, pts, color, type, name, machine, gun, bullets2) => {
   const n = Math.floor(pts.length / 2);
   const now = Date.now();
   const safeColor = typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#111111';
-  const safeType = ['normal', 'long', 'fire', 'machine'].includes(type) ? type : 'normal';
+  const safeType = ['normal', 'long', 'fire', 'machine', 'gun'].includes(type) ? type : 'normal';
   const safeName = typeof name === 'string' ? name.slice(0, 20) : '';
   const safeMachine = Array.isArray(machine) && machine.length >= 2
     && typeof machine[0] === 'number' && typeof machine[1] === 'number'
     ? machine : null;
+  const safeGun = Array.isArray(gun) && gun.length >= 2 && typeof gun[0] === 'number'
+    ? gun : null;
+  let safeBullets = null;
+  if (Array.isArray(bullets2) && bullets2.length >= 4) {
+    safeBullets = [];
+    for (let i = 0; i + 3 < bullets2.length; i += 4) {
+      safeBullets.push({
+        x: bullets2[i] * W,
+        y: bullets2[i + 1] * H,
+        vx: bullets2[i + 2],
+        vy: bullets2[i + 3],
+      });
+    }
+  }
   let rw = remoteWhips.get(id);
   if (!rw || rw.pts.length !== n) {
     const arr = [];
@@ -1150,7 +1408,7 @@ window.bridge.onRemoteWhip((id, pts, color, type, name, machine) => {
       const y = pts[i * 2 + 1] * H;
       arr.push({ x, y, px: x, py: y });
     }
-    remoteWhips.set(id, { pts: arr, t: now, color: safeColor, type: safeType, name: safeName, machine: safeMachine });
+    remoteWhips.set(id, { pts: arr, t: now, color: safeColor, type: safeType, name: safeName, machine: safeMachine, gun: safeGun, bullets: safeBullets });
   } else {
     for (let i = 0; i < n; i++) {
       const w = rw.pts[i];
@@ -1164,6 +1422,8 @@ window.bridge.onRemoteWhip((id, pts, color, type, name, machine) => {
     rw.type = safeType;
     rw.name = safeName;
     rw.machine = safeMachine;
+    rw.gun = safeGun;
+    rw.bullets = safeBullets;
   }
   hadContent = true;
 });
@@ -1172,8 +1432,12 @@ window.bridge.onRemoteGone(id => {
   remoteWhips.delete(id);
 });
 
-window.bridge.onRemoteCrack(t => {
-  playCrackSound(t === 'long' ? 0.85 : 1);
+window.bridge.onRemoteCrack((t, x) => {
+  if (t === 'gun') {
+    playGunfire(x);
+  } else {
+    playCrackSound(t === 'long' ? 0.85 : 1, x);
+  }
 });
 
 window.bridge.onVictimMouse((id, x, y, name, color, cur) => {
@@ -1190,6 +1454,10 @@ window.bridge.onVictimMouse((id, x, y, name, color, cur) => {
 window.bridge.onLocalMouse((x, y) => {
   localMouseX = x;
   localMouseY = y;
+  if (!remoteMode && myClickThrough) {
+    mouseX = x;
+    mouseY = y;
+  }
 });
 
 </script>

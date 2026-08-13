@@ -33,6 +33,11 @@
   #wCanvas { display: block; width: 100%; }
   #wName { text-align: center; font-size: 12px; color: #bbb; padding: 2px 0 8px; }
   #wRow { display: flex; align-items: center; gap: 8px; }
+  .ctRow {
+    display: flex; align-items: center; gap: 8px; margin-top: 12px;
+    font-size: 12px; color: #bbb; cursor: pointer; user-select: none;
+  }
+  .ctRow input { width: auto; accent-color: #7a6cff; cursor: pointer; }
   #wSel { flex: 1; font-size: 12px; color: #9d94ff; }
   #wRow button { width: 120px; flex: none; margin-top: 8px; }
   select:focus, input:focus { border-color: #7a6cff; }
@@ -89,6 +94,8 @@
       <div id="wSel"></div>
       <button type="button" id="wSelect" class="secondary">Select</button>
     </div>
+
+    <label class="ctRow"><input id="clickThrough" type="checkbox"> Allow clicking (whip stays up, real cursor visible, drop whip via tray icon)</label>
   </div>
 
   <button id="save">Save</button>
@@ -142,7 +149,10 @@
     { id: 'long', label: 'Long (2x)' },
     { id: 'fire', label: 'Fire' },
     { id: 'machine', label: 'Whipping Machine' },
+    { id: 'gun', label: 'Gun' },
   ];
+  const pvGunImg = new Image();
+  pvGunImg.src = 'assets/gun.png';
   let wView = 0;
   let selWhip = 'normal';
   const wc = document.getElementById('wCanvas');
@@ -246,6 +256,18 @@
 
   function pvStep() {
     pvT += 0.016;
+    if (pv.type === 'gun') {
+      if (pv.parts.length === 0 && Math.floor(pvT * 60) % 120 === 0) {
+        pv.parts.push({ x: 187, y: 82, life: 40 });
+      }
+      for (let i = pv.parts.length - 1; i >= 0; i--) {
+        const f = pv.parts[i];
+        f.x += 9;
+        f.life--;
+        if (f.life <= 0 || f.x > 280) pv.parts.splice(i, 1);
+      }
+      return;
+    }
     let ax, ay;
     if (pv.type === 'machine') {
       pv.ang += 0.14;
@@ -312,6 +334,24 @@
     wctx.scale(anim.scale, anim.scale);
     wctx.globalAlpha = Math.max(0, Math.min(1, anim.alpha));
     wctx.translate(-wc.width / 2, -wc.height / 2);
+
+    if (pv.type === 'gun') {
+      if (pvGunImg.complete && pvGunImg.naturalWidth) {
+        const bob = Math.sin(pvT * 2.2) * 4;
+        wctx.drawImage(pvGunImg, 90, 55 + bob, 80, 80);
+      }
+      wctx.strokeStyle = '#ffdd66';
+      wctx.lineWidth = 3;
+      wctx.lineCap = 'round';
+      for (const f of pv.parts) {
+        wctx.beginPath();
+        wctx.moveTo(f.x, f.y);
+        wctx.lineTo(f.x - 12, f.y);
+        wctx.stroke();
+      }
+      wctx.restore();
+      return;
+    }
 
     const pts = pv.pts;
     wctx.lineCap = 'round';
@@ -460,6 +500,7 @@
     nameEl.value = cfg.name || '';
     colorEl.value = cfg.color || '#000000';
     volEl.value = Math.round((typeof cfg.volume === 'number' ? cfg.volume : 1) * 100);
+    document.getElementById('clickThrough').checked = !!cfg.clickThrough;
     selWhip = cfg.whip || 'normal';
     wView = Math.max(0, WHIP_TYPES.findIndex(t => t.id === selWhip));
     pvInit(WHIP_TYPES[wView].id);
@@ -488,6 +529,7 @@
       cursor: selCursor,
       whip: selWhip,
       volume: volEl.value / 100,
+      clickThrough: document.getElementById('clickThrough').checked,
     });
   });
 

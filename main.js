@@ -20,12 +20,15 @@ let ownWhipUp = false;
 const clientId = Math.random().toString(36).slice(2, 10);
 
 let setCursorPos = null;
+let getAsyncKeyState = null;
 if (process.platform === 'win32') {
   try {
     const koffi = require('koffi');
     const user32 = koffi.load('user32.dll');
     const winSetCursorPos = user32.func('bool __stdcall SetCursorPos(int x, int y)');
     setCursorPos = (x, y) => winSetCursorPos(x, y);
+    const winGetAsyncKeyState = user32.func('int16_t __stdcall GetAsyncKeyState(int vKey)');
+    getAsyncKeyState = (vk) => winGetAsyncKeyState(vk);
   } catch (e) {
     console.warn('koffi not available, mouse knockback disabled:', e.message);
   }
@@ -49,8 +52,9 @@ function normalizeConfig(cfg) {
     color: /^#[0-9a-fA-F]{6}$/.test(cfg.color || '') ? cfg.color : '#000000',
     cursor: /^[\w.-]+\.png$/.test(cfg.cursor || '') ? cfg.cursor : 'default',
     muted: !!cfg.muted,
-    whip: ['normal', 'long', 'fire', 'machine'].includes(cfg.whip) ? cfg.whip : 'normal',
+    whip: ['normal', 'long', 'fire', 'machine', 'gun'].includes(cfg.whip) ? cfg.whip : 'normal',
     volume: typeof cfg.volume === 'number' ? Math.max(0, Math.min(1, cfg.volume)) : 1,
+    clickThrough: !!cfg.clickThrough,
   };
 }
 
@@ -106,7 +110,9 @@ function createOverlay() {
       config ? config.name : '',
       !!(config && config.muted),
       config ? config.volume : 1,
-      config ? config.whip : 'normal'
+      config ? config.whip : 'normal',
+      !!(config && config.clickThrough),
+      !!getAsyncKeyState
     );
     if (spawnQueued && overlay && overlay.isVisible()) {
       spawnQueued = false;
@@ -261,14 +267,14 @@ function handleRemoteInner(msg) {
   }
   if (msg.type === 'whip' && Array.isArray(msg.p)) {
     if (!overlay || !overlay.isVisible()) ensureOverlay();
-    if (overlay && overlayReady) overlay.webContents.send('remote-whip', id, msg.p, msg.c, msg.t, msg.n, msg.m);
+    if (overlay && overlayReady) overlay.webContents.send('remote-whip', id, msg.p, msg.c, msg.t, msg.n, msg.m, msg.g, msg.b);
     return;
   }
   if (!overlay || !overlayReady) return;
   if (msg.type === 'gone') {
     overlay.webContents.send('remote-gone', id);
   } else if (msg.type === 'crack') {
-    overlay.webContents.send('remote-crack', msg.t);
+    overlay.webContents.send('remote-crack', msg.t, msg.x);
   } else if (msg.type === 'vmouse' && typeof msg.x === 'number' && typeof msg.y === 'number') {
     if (overlay.isVisible()) overlay.webContents.send('victim-mouse', id, msg.x, msg.y, msg.n, msg.c, msg.cur);
   }
@@ -333,10 +339,14 @@ function knockCursor(vx, vy) {
     y += vy;
     vx *= 0.93;
     vy *= 0.93;
-    if (x < b.x) { x = b.x; vx = Math.abs(vx) * 0.65; }
-    else if (x > b.x + b.width - 1) { x = b.x + b.width - 1; vx = -Math.abs(vx) * 0.65; }
-    if (y < b.y) { y = b.y; vy = Math.abs(vy) * 0.65; }
-    else if (y > b.y + b.height - 1) { y = b.y + b.height - 1; vy = -Math.abs(vy) * 0.65; }
+    let impact = 0;
+    if (x < b.x) { x = b.x; impact = Math.abs(vx); vx = Math.abs(vx) * 0.65; }
+    else if (x > b.x + b.width - 1) { x = b.x + b.width - 1; impact = Math.abs(vx); vx = -Math.abs(vx) * 0.65; }
+    if (y < b.y) { y = b.y; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65; }
+    else if (y > b.y + b.height - 1) { y = b.y + b.height - 1; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65 * -1; }
+    if (impact > 12 && overlay && overlayReady && overlay.isVisible()) {
+      overlay.webContents.send('wall-thud', Math.min(1, impact / 70), (x - b.x) / b.width);
+    }
     lastWX = Math.round(x);
     lastWY = Math.round(y);
     setCursorPos(lastWX, lastWY);
@@ -439,7 +449,15 @@ function openSetup() {
   syncSetupZ();
 }
 
-ipcMain.on('whip-crack', () => send({ type: 'crack', t: config ? config.whip : 'normal' }));
+ipcMain.handle('read-sound', (e, name) => {
+  const safe = path.basename(String(name));
+  return fs.readFileSync(path.join(__dirname, 'sounds', safe)).toString('base64');
+});
+ipcMain.on('whip-crack', (e, x) => send({
+  type: 'crack',
+  t: config ? config.whip : 'normal',
+  x: typeof x === 'number' ? x : 0.5,
+}));
 ipcMain.on('whip-drop', () => {});
 ipcMain.on('whip-state', (e, state) => {
   if (!state || !Array.isArray(state.p)) return;
@@ -447,6 +465,8 @@ ipcMain.on('whip-state', (e, state) => {
     type: 'whip',
     p: state.p,
     m: Array.isArray(state.m) ? state.m : undefined,
+    g: Array.isArray(state.g) ? state.g : undefined,
+    b: Array.isArray(state.b) ? state.b : undefined,
     c: config ? config.color : '#000000',
     t: config ? config.whip : 'normal',
     n: config ? config.name : '',
@@ -468,6 +488,7 @@ ipcMain.on('own-gone', () => {
 ipcMain.on('set-capture', (e, capture) => {
   if (!overlay) return;
   if (config && config.role === 'victim') return;
+  if (config && config.clickThrough && capture) return;
   overlay.setIgnoreMouseEvents(!capture);
 });
 ipcMain.on('mouse-knock', (e, vx, vy) => {
@@ -586,11 +607,24 @@ if (!app.requestSingleInstanceLock()) {
     openSetup();
     if (config) connect();
 
+    let pollTick = 0;
+    let altWasDown = false;
     setInterval(() => {
-      if (!config || config.role !== 'victim') return;
+      if (!config) return;
+      pollTick++;
       const b = screen.getPrimaryDisplay().bounds;
       const p = screen.getCursorScreenPoint();
-      if (wsConnected) {
+      if (overlay && overlayReady && overlay.isVisible()) {
+        overlay.webContents.send('local-mouse', p.x - b.x, p.y - b.y);
+        if (getAsyncKeyState && config.role !== 'victim') {
+          const altDown = (getAsyncKeyState(0x12) & 0x8000) !== 0;
+          if (altDown && !altWasDown) {
+            overlay.webContents.send('fire-gun');
+          }
+          altWasDown = altDown;
+        }
+      }
+      if (config.role === 'victim' && wsConnected && pollTick % 2 === 0) {
         send({
           type: 'vmouse',
           x: (p.x - b.x) / b.width,
@@ -600,10 +634,7 @@ if (!app.requestSingleInstanceLock()) {
           cur: config.cursor,
         });
       }
-      if (overlay && overlayReady && overlay.isVisible()) {
-        overlay.webContents.send('local-mouse', p.x - b.x, p.y - b.y);
-      }
-    }, 33);
+    }, 16);
   });
 }
 

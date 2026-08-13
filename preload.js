@@ -1,7 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('bridge', {
-  whipCrack: () => ipcRenderer.send('whip-crack'),
+  whipCrack: (x) => ipcRenderer.send('whip-crack', x),
+  readSound: (name) => ipcRenderer.invoke('read-sound', name),
   whipDrop: () => ipcRenderer.send('whip-drop'),
   hideOverlay: () => ipcRenderer.send('hide-overlay'),
   ownGone: () => ipcRenderer.send('own-gone'),
@@ -14,9 +15,11 @@ contextBridge.exposeInMainWorld('bridge', {
   onLocalMouse: (fn) => ipcRenderer.on('local-mouse', (e, x, y) => fn(x, y)),
   onSpawnWhip: (fn) => ipcRenderer.on('spawn-whip', () => fn()),
   onDropWhip: (fn) => ipcRenderer.on('drop-whip', () => fn()),
-  onSetMode: (fn) => ipcRenderer.on('set-mode', (e, mode, color, name, muted, volume, whipType) => fn(mode, color, name, muted, volume, whipType)),
+  onSetMode: (fn) => ipcRenderer.on('set-mode', (e, mode, color, name, muted, volume, whipType, clickThrough, manualFire) => fn(mode, color, name, muted, volume, whipType, clickThrough, manualFire)),
+  onFireGun: (fn) => ipcRenderer.on('fire-gun', () => fn()),
   onSetMuted: (fn) => ipcRenderer.on('set-muted', (e, muted) => fn(muted)),
-  onRemoteWhip: (fn) => ipcRenderer.on('remote-whip', (e, id, pts, color, type, name, machine) => fn(id, pts, color, type, name, machine)),
+  onWallThud: (fn) => ipcRenderer.on('wall-thud', (e, intensity, x) => fn(intensity, x)),
+  onRemoteWhip: (fn) => ipcRenderer.on('remote-whip', (e, id, pts, color, type, name, machine, gun, bullets) => fn(id, pts, color, type, name, machine, gun, bullets)),
   onRemoteGone: (fn) => ipcRenderer.on('remote-gone', (e, id) => fn(id)),
-  onRemoteCrack: (fn) => ipcRenderer.on('remote-crack', (e, t) => fn(t)),
+  onRemoteCrack: (fn) => ipcRenderer.on('remote-crack', (e, t, x) => fn(t, x)),
 });
