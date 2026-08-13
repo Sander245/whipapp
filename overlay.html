@@ -499,10 +499,42 @@ function playGunfire(xNorm) {
   playSnd('gunfire.mp3', sfxVol(), 1, panFrom(xNorm));
 }
 
+function synthImpact(vol, pan) {
+  ensureAudioCtx();
+  const t0 = audioCtx.currentTime;
+  const pn = audioCtx.createStereoPanner();
+  pn.pan.value = pan;
+  pn.connect(audioCtx.destination);
+  const o1 = audioCtx.createOscillator();
+  const g1 = audioCtx.createGain();
+  o1.type = 'square';
+  o1.frequency.setValueAtTime(1500, t0);
+  o1.frequency.exponentialRampToValueAtTime(400, t0 + 0.08);
+  g1.gain.setValueAtTime(vol * 0.4, t0);
+  g1.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
+  o1.connect(g1);
+  g1.connect(pn);
+  o1.start(t0);
+  o1.stop(t0 + 0.1);
+  const o2 = audioCtx.createOscillator();
+  const g2 = audioCtx.createGain();
+  o2.type = 'sine';
+  o2.frequency.setValueAtTime(260, t0);
+  o2.frequency.exponentialRampToValueAtTime(70, t0 + 0.12);
+  g2.gain.setValueAtTime(vol, t0);
+  g2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
+  o2.connect(g2);
+  g2.connect(pn);
+  o2.start(t0);
+  o2.stop(t0 + 0.16);
+}
+
 function playImpact(xNorm) {
   const vol = sfxVol();
   if (vol <= 0) return;
-  playSnd('cursorimpact.wav', Math.min(1.5, vol * 1.8), 1, panFrom(xNorm));
+  const pan = panFrom(xNorm);
+  playSnd('cursorimpact.wav', Math.min(1.5, vol * 1.8), 1, pan);
+  synthImpact(Math.min(1, vol * 1.1), pan);
 }
 
 const sparks = [];
