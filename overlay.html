@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; cursor: none; }
+  html, body { overflow: hidden; background: transparent; width: 100%; height: 100%; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+
+const P = {
+  segments:       28,
+  segmentLength:  25,
+  taper:          0.6,
+
+  gravity:        1.2,
+  dropGravity:    0.95,
+  damping:        0.96,
+  constraintIters:20,
+  maxStretchRatio: 1.2,
+
+  baseTargetAngle: -1.12,
+  handleAimByMouseX: 0.4,
+  handleAimByMouseY: 0.2,
+  handleAimClamp:    2.0,
+  handleSpring:      0.7,
+  handleAngularDamping: 0.078,
+  basePoseSegments: 2,
+  basePoseStiffStart: 0.9,
+  basePoseStiffEnd:   0.8,
+
+  handleMaxBendDeg: 16,
+  tipMaxBendDeg:   130,
+  bendRigidityStart: 0.8,
+  bendRigidityEnd:   0.12,
+
+  wallBounce:      0.42,
+  wallFriction:    0.86,
+
+  crackSpeed:     140,  
+  crackCooldownMs:150,
+  firstCrackGraceMs: 350,
+
+  hitRadius:      45,
+  hitSpeed:       35,
+  knockScale:     0.65,
+  knockMax:       75,
+  knockCooldownMs: 600,
+
+  machineBarLen:  90,
+  machineBaseSpeed: 0.22,
+  machineMaxMult: 2,
+  machinePoseSegments: 6,
+  machinePoseStiff: 0.85,
+  machineSegFactor: 0.75,
+  machineHitSpeed: 15,
+
+  lineWidthHandle: 7,
+  lineWidthTip:    5,
+  outlineWidth:   3,
+  handleExtraWidth: 5,
+  handleThickSegments: 2,
+  bgAlpha:        0.011,
+
+  arcWidth:       260,
+  arcHeight:      185,
+};
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+
+const fireCv = document.createElement('canvas');
+const fctx = fireCv.getContext('2d');
+const FIRE_SCALE = 2;
+const FIRE_MAX = 128;
+let fireGW = 0, fireGH = 0;
+let fireGrid = null;
+let fireImg = null;
+let fireActive = 0;
+let fireTop = 1e9;
+let fireBottom = 0;
+let fireFrame = 0;
+let fireRTop = 0;
+let fireREnd = -1;
+let rowMin = null;
+let rowMax = null;
+let rowCnt = null;
+let heatVideo = null;
+let heatPending = false;
+let heatFailed = false;
+
+function ensureHeatCapture() {
+  if (heatVideo || heatPending || heatFailed) return;
+  heatPending = true;
+  window.bridge.setProtect(true);
+  navigator.mediaDevices.getDisplayMedia({ audio: false, video: { frameRate: 30 } })
+    .then(stream => {
+      heatVideo = document.createElement('video');
+      heatVideo.srcObject = stream;
+      heatVideo.muted = true;
+      return heatVideo.play();
+    })
+    .then(() => { heatPending = false; })
+    .catch(() => {
+      heatVideo = null;
+      heatFailed = true;
+      heatPending = false;
+      window.bridge.setProtect(false);
+    });
+}
+
+function stopHeatCapture() {
+  if (heatVideo && heatVideo.srcObject) {
+    for (const t of heatVideo.srcObject.getTracks()) t.stop();
+  }
+  heatVideo = null;
+  window.bridge.setProtect(false);
+}
+
+const glCv = document.createElement('canvas');
+let gl = null;
+let glProg = null;
+let glTexScreen = null;
+let glTexHeat = null;
+let glULoc = null;
+let glFailed = false;
+
+function initGL() {
+  if (gl || glFailed) return;
+  try {
+    gl = glCv.getContext('webgl', { premultipliedAlpha: true, alpha: true });
+    if (!gl) throw new Error('webgl unavailable');
+    const vs = gl.createShader(gl.VERTEX_SHADER);
+    gl.shaderSource(vs, 'attribute vec2 aPos; varying vec2 vUv; void main() { vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }');
+    gl.compileShader(vs);
+    if (!gl.getShaderParameter(vs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(vs));
+    const fs = gl.createShader(gl.FRAGMENT_SHADER);
+    gl.shaderSource(fs, [
+      'precision mediump float;',
+      'varying vec2 vUv;',
+      'uniform sampler2D uScreen;',
+      'uniform sampler2D uHeat;',
+      'uniform float uTime;',
+      'uniform vec2 uTexel;',
+      'void main() {',
+      '  float h0 = texture2D(uHeat, vUv).r;',
+      '  float h1 = texture2D(uHeat, vUv + vec2(0.004, 0.0)).r;',
+      '  float h2 = texture2D(uHeat, vUv - vec2(0.004, 0.0)).r;',
+      '  float h3 = texture2D(uHeat, vUv + vec2(0.0, 0.006)).r;',
+      '  float r1 = texture2D(uHeat, vUv - vec2(0.0, uTexel.y * 18.0)).r;',
+      '  float r2 = texture2D(uHeat, vUv - vec2(0.0, uTexel.y * 38.0)).r;',
+      '  float r3 = texture2D(uHeat, vUv - vec2(0.0, uTexel.y * 62.0)).r;',
+      '  float rising = r1 * 0.5 + r2 * 0.28 + r3 * 0.14;',
+      '  float heat = max((h0 * 2.0 + h1 + h2 + h3) / 5.0, rising);',
+      '  float amp = smoothstep(0.02, 0.2, heat);',
+      '  vec2 px = vUv / uTexel;',
+      '  vec2 off = vec2(',
+      '    sin(px.y * 0.045 + uTime * 1.9 + px.x * 0.012) + 0.6 * sin(px.y * 0.11 - uTime * 2.7 + px.x * 0.03),',
+      '    0.5 * sin(px.x * 0.04 + uTime * 2.2) + 0.35 * sin(px.y * 0.06 + uTime * 1.4)',
+      '  ) * amp * 2.0;',
+      '  vec3 col = texture2D(uScreen, vUv + off * uTexel).rgb;',
+      '  gl_FragColor = vec4(col * amp, amp);',
+      '}',
+    ].join('\n'));
+    gl.compileShader(fs);
+    if (!gl.getShaderParameter(fs, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(fs));
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, vs);
+    gl.attachShader(glProg, fs);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) throw new Error('link failed');
+    gl.useProgram(glProg);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(glProg, 'aPos');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    glTexScreen = gl.createTexture();
+    glTexHeat = gl.createTexture();
+    for (const t of [glTexScreen, glTexHeat]) {
+      gl.bindTexture(gl.TEXTURE_2D, t);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    }
+    glULoc = {
+      screen: gl.getUniformLocation(glProg, 'uScreen'),
+      heat: gl.getUniformLocation(glProg, 'uHeat'),
+      time: gl.getUniformLocation(glProg, 'uTime'),
+      texel: gl.getUniformLocation(glProg, 'uTexel'),
+    };
+    gl.uniform1i(glULoc.screen, 0);
+    gl.uniform1i(glULoc.heat, 1);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.clearColor(0, 0, 0, 0);
+    console.log('heat shader ready');
+  } catch (e) {
+    console.warn('heat shader init failed:', e && e.message);
+    gl = null;
+    glFailed = true;
+  }
+}
+
+function drawHeatShader() {
+  if (fireActive <= 0) return;
+  if (!heatVideo || heatVideo.videoWidth === 0) return;
+  initGL();
+  if (!gl) return;
+  if (glCv.width !== W || glCv.height !== H) {
+    glCv.width = W;
+    glCv.height = H;
+  }
+  try {
+    gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, glTexScreen);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, heatVideo);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, glTexHeat);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, fireGW, fireGH, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, fireGrid);
+    gl.uniform1f(glULoc.time, fireFrame * 0.1);
+    gl.uniform2f(glULoc.texel, 1 / W, 1 / H);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    ctx.drawImage(glCv, 0, 0, W, H);
+  } catch (e) {}
+}
+
+function buildFirePalette(levels) {
+  const hex = [
+    0x000000, 0x1F0707, 0x2F0F07, 0x470F07, 0x571707, 0x671F07, 0x771F07,
+    0x8F2707, 0x9F2F07, 0xAF3F07, 0xBF4707, 0xC74707, 0xDF4F07, 0xDF5707,
+    0xDF5707, 0xD75F07, 0xD75F07, 0xD7670F, 0xCF6F0F, 0xCF770F, 0xCF7F0F,
+    0xCF8717, 0xC78717, 0xC78F17, 0xC7971F, 0xBF9F1F, 0xBF9F1F, 0xBFA727,
+    0xBFA727, 0xBFAF2F, 0xB7AF2F, 0xB7B72F, 0xB7B737, 0xCFCF6F, 0xDFDF9F,
+    0xEFEFC7, 0xFFFFFF,
+  ];
+  const pal = [];
+  for (let i = 0; i <= levels; i++) {
+    const t = i / levels * (hex.length - 1);
+    const lo = hex[Math.floor(t)];
+    const hi = hex[Math.min(hex.length - 1, Math.ceil(t))];
+    const f = t - Math.floor(t);
+    pal.push([
+      Math.round(((lo >> 16) & 255) * (1 - f) + ((hi >> 16) & 255) * f),
+      Math.round(((lo >> 8) & 255) * (1 - f) + ((hi >> 8) & 255) * f),
+      Math.round((lo & 255) * (1 - f) + (hi & 255) * f),
+      i < 6 ? 0 : 235,
+    ]);
+  }
+  return pal;
+}
+
+const FIRE_PALETTE = buildFirePalette(FIRE_MAX);
+
+function resize() {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+  fireGW = Math.ceil(W / FIRE_SCALE);
+  fireGH = Math.ceil(H / FIRE_SCALE);
+  fireCv.width = fireGW;
+  fireCv.height = fireGH;
+  fireGrid = new Uint8Array(fireGW * fireGH);
+  fireImg = fctx.createImageData(fireGW, fireGH);
+  fireTop = fireGH;
+  fireBottom = 0;
+  fireREnd = -1;
+  rowMin = new Int16Array(fireGH);
+  rowMax = new Int16Array(fireGH);
+  rowCnt = new Int16Array(fireGH);
+}
+resize();
+window.addEventListener('resize', resize);
+
+let mouseX = 0, mouseY = 0;
+let prevMouseX = 0, prevMouseY = 0;
+let whip = null;
+let dropping = false;
+let lastCrackTime = 0;
+let whipSpawnTime = 0;
+let handleAngle = P.baseTargetAngle;
+let handleAngVel = 0;
+let remoteMode = false;
+let myColor = '#000000';
+let myName = '';
+let muted = false;
+let myVolume = 1;
+let myWhipType = 'normal';
+let segCount = 28;
+let machineAngle = 0;
+let machineSpeed = 0;
+let machineHubX = 0, machineHubY = 0;
+let lastMachineHit = 0;
+let lastContactCrack = 0;
+let motorAudio = null;
+const cursorImgCache = {};
+
+function sfxVol() {
+  return muted ? 0 : myVolume;
+}
+
+function cursorImg(name) {
+  let img = cursorImgCache[name];
+  if (!img) {
+    img = new Image();
+    img.src = 'assets/cursors/' + name;
+    cursorImgCache[name] = img;
+  }
+  return img;
+}
+const victimCursors = new Map();
+const remoteWhips = new Map();
+let localMouseX = null, localMouseY = null;
+let lastKnockTime = 0;
+let hadContent = false;
+
+function colorLum(hex) {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+function shadeColor(hex, amt) {
+  const ch = i => Math.max(0, Math.min(255, parseInt(hex.slice(i, i + 2), 16) + amt));
+  return '#' + [1, 3, 5].map(i => ch(i).toString(16).padStart(2, '0')).join('');
+}
+
+function autoOutline(hex) {
+  return colorLum(hex) > 0.5 ? shadeColor(hex, -90) : shadeColor(hex, 100);
+}
+
+function haloFor(hex) {
+  return colorLum(hex) > 0.6 ? '#333' : '#fff';
+}
+
+const WHIP_CRACK_SOUNDS = ['sounds/A.mp3', 'sounds/B.mp3', 'sounds/C.mp3', 'sounds/D.mp3', 'sounds/E.mp3'];
+
+document.addEventListener('mousemove', e => {
+  if (remoteMode) return;
+  mouseX = e.clientX; mouseY = e.clientY;
+});
+document.addEventListener('mousedown', () => {
+  if (remoteMode) return;
+  if (whip && !dropping) {
+    dropping = true;
+    window.bridge.whipDrop();
+  }
+});
+
+function spawnWhip(mx, my) {
+  dropping = false;
+  lastCrackTime = 0;
+  whipSpawnTime = Date.now();
+  segCount = P.segments;
+  if (myWhipType === 'long') segCount = P.segments * 2;
+  if (myWhipType === 'machine') segCount = Math.round(P.segments * P.machineSegFactor);
+  machineAngle = -Math.PI / 2;
+  machineSpeed = P.machineBaseSpeed;
+  machineHubX = mx;
+  machineHubY = my;
+  const arcW = P.arcWidth * (myWhipType === 'long' ? 1.7 : 1);
+  const pts = [];
+  for (let i = 0; i < segCount; i++) {
+    const t = i / (segCount - 1);
+    const x = mx + t * arcW;
+    const y = my - Math.sin(t * Math.PI * 0.75) * P.arcHeight;
+    pts.push({ x, y, px: x, py: y });
+  }
+  return pts;
+}
+
+function segLen(i) {
+  const t = i / (segCount - 1);
+  return P.segmentLength * (1 - t * (1 - P.taper));
+}
+
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function catmullPoint(pts, i) {
+  const n = pts.length;
+  if (n === 0) return { x: 0, y: 0 };
+  if (i < 0) {
+    if (n >= 2) {
+      return { x: 2 * pts[0].x - pts[1].x, y: 2 * pts[0].y - pts[1].y };
+    }
+    return { x: pts[0].x, y: pts[0].y };
+  }
+  if (i >= n) {
+    if (n >= 2) {
+      const a = pts[n - 2], b = pts[n - 1];
+      return { x: 2 * b.x - a.x, y: 2 * b.y - a.y };
+    }
+    return { x: pts[n - 1].x, y: pts[n - 1].y };
+  }
+  return pts[i];
+}
+
+function whipSegmentBezier(pts, i) {
+  const p0 = catmullPoint(pts, i - 1);
+  const p1 = pts[i];
+  const p2 = pts[i + 1];
+  const p3 = catmullPoint(pts, i + 2);
+  return {
+    cp1x: p1.x + (p2.x - p0.x) / 6,
+    cp1y: p1.y + (p2.y - p0.y) / 6,
+    cp2x: p2.x - (p3.x - p1.x) / 6,
+    cp2y: p2.y - (p3.y - p1.y) / 6,
+    x2: p2.x,
+    y2: p2.y,
+  };
+}
+const wrapPi = a => {
+  while (a > Math.PI) a -= Math.PI * 2;
+  while (a < -Math.PI) a += Math.PI * 2;
+  return a;
+};
+
+function playCrackSound(rate) {
+  const vol = sfxVol();
+  if (vol <= 0) return;
+  if (!WHIP_CRACK_SOUNDS.length) return;
+  const src = WHIP_CRACK_SOUNDS[Math.floor(Math.random() * WHIP_CRACK_SOUNDS.length)];
+  const a = new Audio(src);
+  a.volume = vol;
+  a.preservesPitch = false;
+  a.playbackRate = rate || 1;
+  a.play().catch(() => {});
+}
+
+function updateMotor(active, rate) {
+  const vol = sfxVol();
+  if (active && vol > 0) {
+    if (!motorAudio) {
+      motorAudio = new Audio('sounds/motor.mp3');
+      motorAudio.loop = true;
+    }
+    motorAudio.volume = vol;
+    motorAudio.playbackRate = Math.max(0.5, Math.min(2, rate));
+    if (motorAudio.paused) motorAudio.play().catch(() => {});
+  } else if (motorAudio && !motorAudio.paused) {
+    motorAudio.pause();
+  }
+}
+
+function seedFirePass(arr, f) {
+  for (let i = 0; i < arr.length - 1; i++) {
+    const a = arr[i];
+    const bp = arr[i + 1];
+    const ax = a.px + (a.x - a.px) * f;
+    const ay = a.py + (a.y - a.py) * f;
+    const bx = bp.px + (bp.x - bp.px) * f;
+    const by = bp.py + (bp.y - bp.py) * f;
+    const steps = Math.max(1, Math.ceil((Math.abs(bx - ax) + Math.abs(by - ay)) / FIRE_SCALE));
+    for (let s = 0; s <= steps; s++) {
+      const x = ((ax + (bx - ax) * s / steps) / FIRE_SCALE) | 0;
+      const y = ((ay + (by - ay) * s / steps) / FIRE_SCALE) | 0;
+      if (x >= 0 && x < fireGW && y >= 1 && y < fireGH) {
+        fireGrid[y * fireGW + x] = FIRE_MAX;
+        if (y < fireTop) fireTop = y;
+        if (y > fireBottom) fireBottom = y;
+      }
+    }
+  }
+}
+
+function seedFireAlong(arr) {
+  if (!fireGrid) return;
+  let maxMove = 0;
+  for (const p of arr) {
+    const d = Math.abs(p.x - p.px) + Math.abs(p.y - p.py);
+    if (d > maxMove) maxMove = d;
+  }
+  const passes = Math.min(12, Math.max(1, Math.ceil(maxMove / (FIRE_SCALE * 3))));
+  for (let k = 1; k <= passes; k++) {
+    seedFirePass(arr, k / passes);
+  }
+  fireActive = 220;
+  ensureHeatCapture();
+}
+
+function stepFire() {
+  fireFrame++;
+  const extraDecay = fireFrame % 3 === 0 ? 2 : 0;
+  const yEnd = Math.min(fireGH - 1, fireBottom);
+  const yStart = Math.max(1, fireTop);
+  const ltr = (fireFrame & 1) === 0;
+  for (let y = yStart; y <= yEnd; y++) {
+    const row = y * fireGW;
+    const above = row - fireGW;
+    const xFrom = ltr ? 0 : fireGW - 1;
+    const xTo = ltr ? fireGW : -1;
+    const xStep = ltr ? 1 : -1;
+    for (let x = xFrom; x !== xTo; x += xStep) {
+      const src = fireGrid[row + x];
+      if (src === 0) {
+        fireGrid[above + x] = 0;
+        continue;
+      }
+      const rnd = (Math.random() * 3) | 0;
+      let dx = x - rnd + 1;
+      if (dx < 0) dx = 0; else if (dx >= fireGW) dx = fireGW - 1;
+      const v = src - ((Math.random() * 6.5) | 0) - extraDecay;
+      fireGrid[above + dx] = v > 0 ? v : 0;
+    }
+  }
+  const bRow = yEnd * fireGW;
+  for (let x = 0; x < fireGW; x++) {
+    const src = fireGrid[bRow + x];
+    if (src > 0) {
+      fireGrid[bRow + x] = src - 1;
+    }
+  }
+  fireTop = Math.max(1, fireTop - 1);
+  while (fireTop < yEnd) {
+    const r = fireTop * fireGW;
+    let any = false;
+    for (let x = 0; x < fireGW; x++) {
+      if (fireGrid[r + x]) { any = true; break; }
+    }
+    if (any) break;
+    fireTop++;
+  }
+  const rTop = Math.max(0, fireTop - 1);
+  const d = fireImg.data;
+  for (let y = rTop; y <= yEnd; y++) {
+    const row = y * fireGW;
+    let mn = 32767;
+    let mx = -1;
+    let cnt = 0;
+    for (let x = 0; x < fireGW; x++) {
+      const h = fireGrid[row + x];
+      const pal = FIRE_PALETTE[h];
+      const o = (row + x) * 4;
+      d[o] = pal[0];
+      d[o + 1] = pal[1];
+      d[o + 2] = pal[2];
+      d[o + 3] = pal[3];
+      if (h > 8) {
+        if (x < mn) mn = x;
+        if (x > mx) mx = x;
+        cnt++;
+      }
+    }
+    rowMin[y] = mn;
+    rowMax[y] = mx;
+    rowCnt[y] = cnt;
+  }
+  fireRTop = rTop;
+  fireREnd = yEnd;
+  fctx.putImageData(fireImg, 0, 0, 0, rTop, fireGW, yEnd - rTop + 1);
+}
+
+
+
+function drawFire() {
+  if (fireActive <= 0) return;
+  fireActive--;
+  if (fireActive === 0) {
+    fireGrid.fill(0);
+    fireTop = fireGH;
+    fireBottom = 0;
+    fireREnd = -1;
+    fctx.clearRect(0, 0, fireGW, fireGH);
+    stopHeatCapture();
+    return;
+  }
+  stepFire();
+  ctx.save();
+  ctx.drawImage(fireCv, 0, 0, W, H);
+  ctx.globalCompositeOperation = 'lighter';
+  const sway = Math.sin(fireFrame * 0.22) * 2.5;
+  ctx.globalAlpha = 0.16;
+  ctx.drawImage(fireCv, sway, -3, W, H);
+  ctx.globalAlpha = 0.1;
+  ctx.drawImage(fireCv, -sway, -6, W, H);
+  ctx.globalAlpha = 1;
+  ctx.restore();
+}
+
+function drawMachine(hx, hy, endPt) {
+  ctx.save();
+  ctx.lineCap = 'round';
+
+  ctx.strokeStyle = '#555';
+  ctx.lineWidth = 12;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy + 14);
+  ctx.lineTo(hx, hy + 54);
+  ctx.stroke();
+  ctx.strokeStyle = '#8a8a8a';
+  ctx.lineWidth = 7;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy + 16);
+  ctx.lineTo(hx, hy + 51);
+  ctx.stroke();
+
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(endPt.x, endPt.y);
+  ctx.stroke();
+  ctx.strokeStyle = '#a8a8a8';
+  ctx.lineWidth = 5;
+  ctx.beginPath();
+  ctx.moveTo(hx, hy);
+  ctx.lineTo(endPt.x, endPt.y);
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(hx, hy, 14, 0, Math.PI * 2);
+  ctx.fillStyle = '#4a4a4a';
+  ctx.fill();
+  ctx.strokeStyle = '#c8c8c8';
+  ctx.lineWidth = 3;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(hx, hy, 4, 0, Math.PI * 2);
+  ctx.fillStyle = '#ddd';
+  ctx.fill();
+
+  ctx.beginPath();
+  ctx.arc(endPt.x, endPt.y, 6, 0, Math.PI * 2);
+  ctx.fillStyle = '#888';
+  ctx.fill();
+  ctx.strokeStyle = '#c8c8c8';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawWhipName(w, name, color) {
+  if (!name || !w || !w.length) return;
+  ctx.font = '600 13px "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = color;
+  ctx.fillText(name, w[0].x, w[0].y + 26);
+}
+
+function updateHandleAim() {
+  if (dropping || myWhipType === 'machine') return;
+  const mvx = mouseX - prevMouseX;
+  const mvy = mouseY - prevMouseY;
+  const delta = clamp(
+    mvx * P.handleAimByMouseX + mvy * P.handleAimByMouseY,
+    -P.handleAimClamp,
+    P.handleAimClamp
+  );
+  const target = P.baseTargetAngle + delta;
+  const err = wrapPi(target - handleAngle);
+  handleAngVel += err * P.handleSpring;
+  handleAngVel *= P.handleAngularDamping;
+  handleAngle = wrapPi(handleAngle + handleAngVel);
+}
+
+function applyMachinePose() {
+  if (!whip || dropping || myWhipType !== 'machine') return;
+  const dx = Math.cos(machineAngle);
+  const dy = Math.sin(machineAngle);
+  const guided = Math.min(P.machinePoseSegments, whip.length - 1);
+  for (let i = 1; i <= guided; i++) {
+    const prev = whip[i - 1];
+    const p = whip[i];
+    const targetLen = segLen(i - 1);
+    const tx = prev.x + dx * targetLen;
+    const ty = prev.y + dy * targetLen;
+    p.x = lerp(p.x, tx, P.machinePoseStiff);
+    p.y = lerp(p.y, ty, P.machinePoseStiff);
+  }
+}
+
+function applyBasePose() {
+  if (!whip || dropping || myWhipType === 'machine') return;
+  const dx = Math.cos(handleAngle);
+  const dy = Math.sin(handleAngle);
+  const guided = Math.min(P.basePoseSegments, whip.length - 1);
+  for (let i = 1; i <= guided; i++) {
+    const t = (i - 1) / Math.max(guided - 1, 1);
+    const stiff = lerp(P.basePoseStiffStart, P.basePoseStiffEnd, t);
+    const prev = whip[i - 1];
+    const p = whip[i];
+    const targetLen = segLen(i - 1);
+    const tx = prev.x + dx * targetLen;
+    const ty = prev.y + dy * targetLen;
+    p.x = lerp(p.x, tx, stiff);
+    p.y = lerp(p.y, ty, stiff);
+  }
+}
+
+function applyBendLimits() {
+  if (!whip || whip.length < 3) return;
+  for (let i = 1; i < whip.length - 1; i++) {
+    const a = whip[i - 1];
+    const b = whip[i];
+    const c = whip[i + 1];
+
+    const v1x = a.x - b.x;
+    const v1y = a.y - b.y;
+    const v2x = c.x - b.x;
+    const v2y = c.y - b.y;
+    const l1 = Math.hypot(v1x, v1y) || 0.0001;
+    const l2 = Math.hypot(v2x, v2y) || 0.0001;
+    const n1x = v1x / l1, n1y = v1y / l1;
+    const n2x = v2x / l2, n2y = v2y / l2;
+
+    const dot = clamp(n1x * n2x + n1y * n2y, -1, 1);
+    const angle = Math.acos(dot);
+    const t = i / (whip.length - 2);
+    const maxBend = lerp(P.handleMaxBendDeg, P.tipMaxBendDeg, t) * Math.PI / 180;
+    const bend = Math.PI - angle;
+    if (bend <= maxBend) continue;
+
+    const cross = n1x * n2y - n1y * n2x;
+    const sign = cross >= 0 ? 1 : -1;
+    const targetAngle = Math.PI - maxBend;
+    const targetA = Math.atan2(n1y, n1x) + sign * targetAngle;
+    const tx = b.x + Math.cos(targetA) * l2;
+    const ty = b.y + Math.sin(targetA) * l2;
+    const rigidity = lerp(P.bendRigidityStart, P.bendRigidityEnd, t);
+
+    c.x = lerp(c.x, tx, rigidity);
+    c.y = lerp(c.y, ty, rigidity);
+  }
+}
+
+function capSegmentStretch() {
+  if (!whip || whip.length < 2) return;
+  for (let i = 0; i < whip.length - 1; i++) {
+    const a = whip[i];
+    const b = whip[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 0.0001;
+    const maxLen = segLen(i) * P.maxStretchRatio;
+    if (dist <= maxLen) continue;
+    const k = maxLen / dist;
+    b.x = a.x + dx * k;
+    b.y = a.y + dy * k;
+  }
+}
+
+function applyWallCollisions() {
+  if (!whip || dropping) return;
+  const start = 1;
+  for (let i = start; i < whip.length; i++) {
+    const p = whip[i];
+    let vx = p.x - p.px;
+    let vy = p.y - p.py;
+    let hit = false;
+
+    if (p.x < 0) {
+      p.x = 0;
+      if (vx < 0) vx = -vx * P.wallBounce;
+      vy *= P.wallFriction;
+      hit = true;
+    } else if (p.x > W) {
+      p.x = W;
+      if (vx > 0) vx = -vx * P.wallBounce;
+      vy *= P.wallFriction;
+      hit = true;
+    }
+
+    if (p.y < 0) {
+      p.y = 0;
+      if (vy < 0) vy = -vy * P.wallBounce;
+      vx *= P.wallFriction;
+      hit = true;
+    } else if (p.y > H) {
+      p.y = H;
+      if (vy > 0) vy = -vy * P.wallBounce;
+      vx *= P.wallFriction;
+      hit = true;
+    }
+
+    if (hit) {
+      p.px = p.x - vx;
+      p.py = p.y - vy;
+    }
+  }
+}
+
+function distToSegment(px0, py0, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const l2 = dx * dx + dy * dy;
+  if (l2 === 0) return Math.hypot(px0 - x1, py0 - y1);
+  let t = ((px0 - x1) * dx + (py0 - y1) * dy) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(px0 - (x1 + t * dx), py0 - (y1 + t * dy));
+}
+
+const lastHitByVictim = new Map();
+
+function whipTouches(cx, cy, from) {
+  for (let i = whip.length - 1; i >= from; i--) {
+    const p = whip[i];
+    if (distToSegment(cx, cy, p.px, p.py, p.x, p.y) <= P.hitRadius) return i;
+    if (i > 0) {
+      const q = whip[i - 1];
+      if (distToSegment(cx, cy, q.x, q.y, p.x, p.y) <= P.hitRadius) return i;
+      if (distToSegment(cx, cy, q.px, q.py, p.px, p.py) <= P.hitRadius) return i;
+    }
+  }
+  return -1;
+}
+
+function checkVictimHits(now) {
+  if (remoteMode || !whip || dropping) return;
+  const from = Math.max(0, whip.length - 12);
+  const minSpeed = myWhipType === 'machine' ? P.machineHitSpeed : P.hitSpeed;
+  for (const [vid, c] of victimCursors) {
+    if (now - c.t > 2000) continue;
+    const last = lastHitByVictim.get(vid) || 0;
+    if (now - last < P.knockCooldownMs) continue;
+    const idx = whipTouches(c.x, c.y, from);
+    if (idx < 0) continue;
+    const p = whip[idx];
+    const pvx = p.x - p.px;
+    const pvy = p.y - p.py;
+    const speed = Math.hypot(pvx, pvy);
+    if (speed < minSpeed) continue;
+    let k = Math.min(speed * P.knockScale, P.knockMax);
+    if (myWhipType === 'fire') {
+      const boost = 1 + 1.5 * Math.min(1, Math.max(0, speed - P.hitSpeed) / 60);
+      k = Math.min(speed * P.knockScale * boost, P.knockMax * 2.5);
+    } else if (myWhipType === 'long') {
+      k = Math.min(speed * P.knockScale, P.knockMax * 1.35);
+    }
+    window.bridge.sendHit(vid, pvx / speed * k, pvy / speed * k);
+    lastHitByVictim.set(vid, now);
+    if (myWhipType === 'machine') {
+      lastMachineHit = now;
+      if (now - lastContactCrack > 450) {
+        lastContactCrack = now;
+        playCrackSound();
+        window.bridge.whipCrack();
+      }
+    }
+  }
+}
+
+function update() {
+  const now = Date.now();
+  let anyMachine = false;
+  for (const [id, rw] of remoteWhips) {
+    if (now - rw.t > 3000) { remoteWhips.delete(id); continue; }
+    if (rw.type === 'fire') seedFireAlong(rw.pts);
+    if (rw.type === 'machine') anyMachine = true;
+  }
+  for (const [id, c] of victimCursors) {
+    if (now - c.t > 3000) victimCursors.delete(id);
+  }
+
+  const ownMachine = !remoteMode && myWhipType === 'machine' && whip && !dropping;
+  if (ownMachine) anyMachine = true;
+  updateMotor(anyMachine, ownMachine ? 0.85 + (machineSpeed / P.machineBaseSpeed - 1) * 0.45 : 1);
+
+  if (!whip && remoteWhips.size === 0 && hadContent) {
+    hadContent = false;
+    window.bridge.hideOverlay();
+  }
+
+  if (!whip) return;
+
+  if (myWhipType === 'fire') seedFireAlong(whip);
+
+  if (ownMachine) {
+    machineHubX = mouseX;
+    machineHubY = mouseY;
+    const target = P.machineBaseSpeed * (now - lastMachineHit < 1200 ? P.machineMaxMult : 1);
+    machineSpeed += (target - machineSpeed) * 0.05;
+    machineAngle = wrapPi(machineAngle + machineSpeed);
+  }
+
+  const g = dropping ? P.dropGravity : P.gravity;
+  updateHandleAim();
+
+  const start = dropping ? 0 : 1;
+  for (let i = start; i < whip.length; i++) {
+    const p = whip[i];
+    const vx = (p.x - p.px) * P.damping;
+    const vy = (p.y - p.py) * P.damping;
+    p.px = p.x;
+    p.py = p.y;
+    p.x += vx;
+    p.y += vy + g;
+  }
+
+  if (!dropping) {
+    if (myWhipType === 'machine') {
+      const hx = machineHubX + Math.cos(machineAngle) * P.machineBarLen;
+      const hy = machineHubY + Math.sin(machineAngle) * P.machineBarLen;
+      whip[0].px = whip[0].x;
+      whip[0].py = whip[0].y;
+      whip[0].x = hx;
+      whip[0].y = hy;
+    } else {
+      whip[0].x = mouseX;
+      whip[0].y = mouseY;
+      whip[0].px = mouseX;
+      whip[0].py = mouseY;
+    }
+  }
+
+  capSegmentStretch();
+  applyWallCollisions();
+
+  applyBasePose();
+  applyMachinePose();
+
+  for (let iter = 0; iter < P.constraintIters; iter++) {
+    for (let i = 0; i < whip.length - 1; i++) {
+      const a = whip[i], b = whip[i + 1];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const dist = Math.sqrt(dx * dx + dy * dy) || 0.0001;
+      const target = segLen(i);
+      const diff = (dist - target) / dist * 0.5;
+      const ox = dx * diff, oy = dy * diff;
+      if (i === 0 && !dropping) {
+        b.x -= ox * 2;
+        b.y -= oy * 2;
+      } else {
+        a.x += ox; a.y += oy;
+        b.x -= ox; b.y -= oy;
+      }
+    }
+    applyBendLimits();
+    if (!dropping) {
+      applyBasePose();
+      applyMachinePose();
+    }
+    capSegmentStretch();
+    applyWallCollisions();
+  }
+
+  const tip = whip[whip.length - 1];
+  const tipVel = Math.hypot(tip.x - tip.px, tip.y - tip.py);
+
+  checkVictimHits(now);
+
+  if (!dropping && myWhipType !== 'machine' && tipVel > P.crackSpeed) {
+    if (now - whipSpawnTime >= P.firstCrackGraceMs && now - lastCrackTime > P.crackCooldownMs) {
+      lastCrackTime = now;
+      playCrackSound(myWhipType === 'long' ? 0.85 : 1);
+      window.bridge.whipCrack();
+    }
+  }
+
+  if (whip) {
+    const flat = [];
+    for (const p of whip) {
+      flat.push(Math.round(p.x / W * 10000) / 10000, Math.round(p.y / H * 10000) / 10000);
+    }
+    const state = { p: flat };
+    if (myWhipType === 'machine' && !dropping) {
+      state.m = [
+        Math.round(machineHubX / W * 10000) / 10000,
+        Math.round(machineHubY / H * 10000) / 10000,
+      ];
+    }
+    window.bridge.sendWhipState(state);
+  }
+
+  if (dropping && whip.every(p => p.y > H + 60)) {
+    whip = null;
+    dropping = false;
+    window.bridge.ownGone();
+    window.bridge.setCapture(false);
+  }
+  prevMouseX = mouseX;
+  prevMouseY = mouseY;
+}
+
+function drawVictimCursors() {
+  const now = Date.now();
+  for (const c of victimCursors.values()) {
+    if (now - c.t > 2000) continue;
+    const fill = c.color || '#22c55e';
+    const outline = autoOutline(fill);
+    ctx.save();
+    ctx.translate(c.x, c.y);
+
+    let drewImage = false;
+    if (c.cur && c.cur !== 'default') {
+      const img = cursorImg(c.cur);
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, 22, 22);
+        ctx.imageSmoothingEnabled = true;
+        drewImage = true;
+      }
+    }
+
+    if (!drewImage) {
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(0, 19);
+      ctx.lineTo(5, 14.5);
+      ctx.lineTo(8.5, 21.5);
+      ctx.lineTo(11, 20);
+      ctx.lineTo(7.5, 13.5);
+      ctx.lineTo(14, 13);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = outline;
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = 'round';
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    if (c.name) {
+      const tx = drewImage ? 11 : 7;
+      ctx.font = '600 13px "Segoe UI", sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = fill;
+      ctx.fillText(c.name, tx, 36);
+    }
+    ctx.restore();
+  }
+}
+
+function drawWhip(w, color) {
+  if (!w || w.length < 2) return;
+
+  const core = color || '#111';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.strokeStyle = haloFor(core);
+  ctx.beginPath();
+  ctx.moveTo(w[0].x, w[0].y);
+  for (let i = 0; i < w.length - 1; i++) {
+    const { cp1x, cp1y, cp2x, cp2y, x2, y2 } = whipSegmentBezier(w, i);
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+  }
+  ctx.lineWidth = P.lineWidthTip + P.outlineWidth * 2;
+  ctx.stroke();
+
+  const thickLinks = Math.min(P.handleThickSegments, w.length - 1);
+  if (thickLinks > 0 && P.handleExtraWidth > 0) {
+    ctx.beginPath();
+    ctx.moveTo(w[0].x, w[0].y);
+    for (let i = 0; i < thickLinks; i++) {
+      const { cp1x, cp1y, cp2x, cp2y, x2, y2 } = whipSegmentBezier(w, i);
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+    }
+    ctx.lineWidth =
+      P.lineWidthHandle + P.handleExtraWidth + P.outlineWidth * 2;
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = core;
+  for (let i = 0; i < w.length - 1; i++) {
+    const t = i / Math.max(1, w.length - 2);
+    const extra = i < P.handleThickSegments ? P.handleExtraWidth : 0;
+    ctx.lineWidth = lerp(P.lineWidthHandle, P.lineWidthTip, t) + extra;
+    const { cp1x, cp1y, cp2x, cp2y, x2, y2 } = whipSegmentBezier(w, i);
+    ctx.beginPath();
+    ctx.moveTo(w[i].x, w[i].y);
+    ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x2, y2);
+    ctx.stroke();
+  }
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.fillStyle = `rgba(0,0,0,${P.bgAlpha})`;
+  ctx.fillRect(0, 0, W, H);
+
+  drawHeatShader();
+  drawVictimCursors();
+
+  for (const rw of remoteWhips.values()) {
+    if (rw.machine && rw.pts.length) {
+      drawMachine(rw.machine[0] * W, rw.machine[1] * H, rw.pts[0]);
+    }
+    drawWhip(rw.pts, rw.color);
+    drawWhipName(rw.pts, rw.name, rw.color);
+  }
+  if (whip) {
+    if (myWhipType === 'machine' && !dropping) {
+      drawMachine(machineHubX, machineHubY, whip[0]);
+    }
+    drawWhip(whip, myColor);
+    drawWhipName(whip, myName, myColor);
+  }
+  drawFire();
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+
+window.bridge.onSpawnWhip(() => {
+  if (remoteMode) return;
+  whip = spawnWhip(mouseX || W / 2, mouseY || H / 2);
+  dropping = false;
+  hadContent = true;
+  prevMouseX = mouseX;
+  prevMouseY = mouseY;
+  handleAngle = P.baseTargetAngle;
+  handleAngVel = 0;
+  window.bridge.setCapture(true);
+});
+
+window.bridge.onDropWhip(() => {
+  if (remoteMode) return;
+  if (whip && !dropping) dropping = true;
+});
+
+window.bridge.onSetMode((mode, color, name, mutedArg, volume, whipType) => {
+  remoteMode = (mode === 'remote');
+  if (typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color)) myColor = color;
+  if (typeof name === 'string') myName = name;
+  muted = !!mutedArg;
+  if (typeof volume === 'number') myVolume = Math.max(0, Math.min(1, volume));
+  if (['normal', 'long', 'fire', 'machine'].includes(whipType)) myWhipType = whipType;
+});
+
+window.bridge.onSetMuted(m => {
+  muted = !!m;
+});
+
+window.bridge.onRemoteWhip((id, pts, color, type, name, machine) => {
+  const n = Math.floor(pts.length / 2);
+  const now = Date.now();
+  const safeColor = typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#111111';
+  const safeType = ['normal', 'long', 'fire', 'machine'].includes(type) ? type : 'normal';
+  const safeName = typeof name === 'string' ? name.slice(0, 20) : '';
+  const safeMachine = Array.isArray(machine) && machine.length >= 2
+    && typeof machine[0] === 'number' && typeof machine[1] === 'number'
+    ? machine : null;
+  let rw = remoteWhips.get(id);
+  if (!rw || rw.pts.length !== n) {
+    const arr = [];
+    for (let i = 0; i < n; i++) {
+      const x = pts[i * 2] * W;
+      const y = pts[i * 2 + 1] * H;
+      arr.push({ x, y, px: x, py: y });
+    }
+    remoteWhips.set(id, { pts: arr, t: now, color: safeColor, type: safeType, name: safeName, machine: safeMachine });
+  } else {
+    for (let i = 0; i < n; i++) {
+      const w = rw.pts[i];
+      w.px = w.x;
+      w.py = w.y;
+      w.x = pts[i * 2] * W;
+      w.y = pts[i * 2 + 1] * H;
+    }
+    rw.t = now;
+    rw.color = safeColor;
+    rw.type = safeType;
+    rw.name = safeName;
+    rw.machine = safeMachine;
+  }
+  hadContent = true;
+});
+
+window.bridge.onRemoteGone(id => {
+  remoteWhips.delete(id);
+});
+
+window.bridge.onRemoteCrack(t => {
+  playCrackSound(t === 'long' ? 0.85 : 1);
+});
+
+window.bridge.onVictimMouse((id, x, y, name, color, cur) => {
+  victimCursors.set(id, {
+    x: x * W,
+    y: y * H,
+    t: Date.now(),
+    name: typeof name === 'string' ? name.slice(0, 20) : '',
+    color: typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : '#22c55e',
+    cur: typeof cur === 'string' && /^[\w.-]+\.png$/.test(cur) ? cur : 'default',
+  });
+});
+
+window.bridge.onLocalMouse((x, y) => {
+  localMouseX = x;
+  localMouseY = y;
+});
+
+</script>
+</body>
+</html>

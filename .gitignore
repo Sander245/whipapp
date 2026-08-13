@@ -1,0 +1,5 @@
+node_modules/
+dist/
+out/
+*.tgz
+server/cloudflared.exe

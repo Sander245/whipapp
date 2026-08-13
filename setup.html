@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Segoe UI', sans-serif; }
+  body { background: #1b1b22; color: #eee; padding: 24px; }
+  h1 { font-size: 20px; margin-bottom: 4px; }
+  .sub { color: #999; font-size: 12px; margin-bottom: 20px; }
+  label { display: block; font-size: 13px; color: #bbb; margin: 14px 0 5px; }
+  select, input {
+    width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid #3a3a46;
+    background: #26262f; color: #eee; font-size: 14px; outline: none;
+  }
+  input[type="color"] {
+    height: 42px; padding: 4px; cursor: pointer;
+  }
+  #cursorGrid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .curItem {
+    width: 42px; height: 42px; display: flex; align-items: center; justify-content: center;
+    background: #26262f; border: 2px solid #3a3a46; border-radius: 8px; cursor: pointer;
+  }
+  .curItem:hover { border-color: #55555f; }
+  .curItem.sel { border-color: #7a6cff; }
+  .curItem img { width: 26px; height: 26px; image-rendering: pixelated; }
+  input[type="range"] { padding: 0; height: 26px; accent-color: #7a6cff; cursor: pointer; border: none; background: transparent; }
+  #whipCar { display: flex; align-items: stretch; gap: 6px; margin-top: 4px; }
+  .wArrow {
+    width: 34px; margin-top: 0; padding: 0; background: #3a3a46; font-size: 13px; flex: none;
+  }
+  .wArrow:hover { background: #4a4a58; }
+  #wStage { flex: 1; background: #26262f; border: 1px solid #3a3a46; border-radius: 8px; overflow: hidden; }
+  #wCanvas { display: block; width: 100%; }
+  #wName { text-align: center; font-size: 12px; color: #bbb; padding: 2px 0 8px; }
+  #wRow { display: flex; align-items: center; gap: 8px; }
+  #wSel { flex: 1; font-size: 12px; color: #9d94ff; }
+  #wRow button { width: 120px; flex: none; margin-top: 8px; }
+  select:focus, input:focus { border-color: #7a6cff; }
+  .hint { font-size: 11px; color: #777; margin-top: 4px; }
+  button {
+    margin-top: 22px; width: 100%; padding: 11px; border: none; border-radius: 8px;
+    background: #7a6cff; color: #fff; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  button:hover { background: #8d80ff; }
+  button.secondary { background: #3a3a46; margin-top: 10px; font-weight: 500; }
+  button.secondary:hover { background: #4a4a58; }
+  button.exit { background: #46323a; margin-top: 10px; font-weight: 500; }
+  button.exit:hover { background: #5c3d49; }
+  #hostStatus { font-size: 12px; color: #9d94ff; margin-top: 6px; min-height: 16px; }
+  .row { display: flex; gap: 8px; }
+  .row button { flex: 1; }
+  .divider { display: block; width: 100%; margin: 14px 0 0; user-select: none; -webkit-user-drag: none; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+  <h1>whipapp menu</h1>
+  <div class="sub" id="connStatus"></div>
+
+  <label for="role">Role</label>
+  <select id="role">
+    <option value="whipper">Whipper (GET BACK TO WORK)</option>
+    <option value="victim">Victim (get whipped)</option>
+    <option value="solo">Solo (test the whip ig)</option>
+  </select>
+
+  <label for="name">Name tag</label>
+  <input id="name" type="text" placeholder="your name" maxlength="20" spellcheck="false">
+
+  <label for="color">Your color</label>
+  <input id="color" type="color" value="#000000">
+
+  <div id="cursorSection">
+    <label>Cursors</label>
+    <div id="cursorGrid"></div>
+  </div>
+
+  <div id="whipSection">
+    <label>Whip</label>
+    <div id="whipCar">
+      <button type="button" class="wArrow" id="wPrev">&#9664;</button>
+      <div id="wStage">
+        <canvas id="wCanvas" width="270" height="200"></canvas>
+        <div id="wName">Normal</div>
+      </div>
+      <button type="button" class="wArrow" id="wNext">&#9654;</button>
+    </div>
+    <div id="wRow">
+      <div id="wSel"></div>
+      <button type="button" id="wSelect" class="secondary">Select</button>
+    </div>
+  </div>
+
+  <button id="save">Save</button>
+
+  <label for="vol">Volume</label>
+  <input id="vol" type="range" min="0" max="100" value="100">
+
+  <div id="netFields">
+    <label for="server">Server URL</label>
+    <input id="server" type="text" placeholder="wss://your-app.serverthing.com" spellcheck="false">
+    <div class="row">
+      <button id="hostBtn" class="secondary">Host Server</button>
+      <button id="copyBtn" class="secondary">Copy Link</button>
+    </div>
+    <div id="hostStatus"></div>
+
+    <img class="divider" src="assets/divider.png" alt="">
+
+    <label for="room">Room code</label>
+    <input id="room" type="text" placeholder="e.g. banana42" spellcheck="false">
+  </div>
+
+  <button id="exitBtn" class="exit">Exit WhipApp</button>
+  <div class="hint" style="margin-top: 10px; text-align: center;">!!! Closing this window keeps WhipApp running in the tray. !!!</div>
+
+<script>
+  const roleEl = document.getElementById('role');
+  const serverEl = document.getElementById('server');
+  const roomEl = document.getElementById('room');
+  const netEl = document.getElementById('netFields');
+
+  function syncVisibility() {
+    netEl.classList.toggle('hidden', roleEl.value === 'solo');
+    document.getElementById('cursorSection').classList.toggle('hidden', roleEl.value !== 'victim');
+    document.getElementById('whipSection').classList.toggle('hidden', roleEl.value === 'victim');
+  }
+  roleEl.addEventListener('change', syncVisibility);
+
+  const hostBtn = document.getElementById('hostBtn');
+  const hostStatus = document.getElementById('hostStatus');
+  const connStatus = document.getElementById('connStatus');
+
+  const nameEl = document.getElementById('name');
+  const colorEl = document.getElementById('color');
+  const volEl = document.getElementById('vol');
+  const gridEl = document.getElementById('cursorGrid');
+  let selCursor = 'default';
+
+  const WHIP_TYPES = [
+    { id: 'normal', label: 'Normal' },
+    { id: 'long', label: 'Long (2x)' },
+    { id: 'fire', label: 'Fire' },
+    { id: 'machine', label: 'Whipping Machine' },
+  ];
+  let wView = 0;
+  let selWhip = 'normal';
+  const wc = document.getElementById('wCanvas');
+  const wctx = wc.getContext('2d');
+  const wNameEl = document.getElementById('wName');
+  const wSelEl = document.getElementById('wSel');
+  const wSelectBtn = document.getElementById('wSelect');
+  const anim = { off: 0, alpha: 1, scale: 1, phase: null, dir: 1, t0: 0 };
+  const pv = { type: 'normal', pts: [], len: 8.5, ang: -1.2, parts: [] };
+  let pvT = 0;
+
+  const PF_W = 135, PF_H = 100, PF_MAX = 128;
+  const pfCv = document.createElement('canvas');
+  pfCv.width = PF_W;
+  pfCv.height = PF_H;
+  const pfCtx = pfCv.getContext('2d');
+  const pfImg = pfCtx.createImageData(PF_W, PF_H);
+  const pfGrid = new Uint8Array(PF_W * PF_H);
+  let pfFrame = 0;
+
+  const PF_PALETTE = (() => {
+    const hex = [
+      0x000000, 0x1F0707, 0x2F0F07, 0x470F07, 0x571707, 0x671F07, 0x771F07,
+      0x8F2707, 0x9F2F07, 0xAF3F07, 0xBF4707, 0xC74707, 0xDF4F07, 0xDF5707,
+      0xDF5707, 0xD75F07, 0xD75F07, 0xD7670F, 0xCF6F0F, 0xCF770F, 0xCF7F0F,
+      0xCF8717, 0xC78717, 0xC78F17, 0xC7971F, 0xBF9F1F, 0xBF9F1F, 0xBFA727,
+      0xBFA727, 0xBFAF2F, 0xB7AF2F, 0xB7B72F, 0xB7B737, 0xCFCF6F, 0xDFDF9F,
+      0xEFEFC7, 0xFFFFFF,
+    ];
+    const pal = [];
+    for (let i = 0; i <= PF_MAX; i++) {
+      const t = i / PF_MAX * (hex.length - 1);
+      const lo = hex[Math.floor(t)];
+      const hi = hex[Math.min(hex.length - 1, Math.ceil(t))];
+      const f = t - Math.floor(t);
+      pal.push([
+        Math.round(((lo >> 16) & 255) * (1 - f) + ((hi >> 16) & 255) * f),
+        Math.round(((lo >> 8) & 255) * (1 - f) + ((hi >> 8) & 255) * f),
+        Math.round((lo & 255) * (1 - f) + (hi & 255) * f),
+        i < 6 ? 0 : 235,
+      ]);
+    }
+    return pal;
+  })();
+
+  function pfStep() {
+    pfFrame++;
+    const extra = pfFrame % 3 === 0 ? 2 : 0;
+    const ltr = (pfFrame & 1) === 0;
+    for (let y = 1; y < PF_H; y++) {
+      const row = y * PF_W;
+      const above = row - PF_W;
+      const xFrom = ltr ? 0 : PF_W - 1;
+      const xTo = ltr ? PF_W : -1;
+      const xStep = ltr ? 1 : -1;
+      for (let x = xFrom; x !== xTo; x += xStep) {
+        const src = pfGrid[row + x];
+        if (src === 0) {
+          pfGrid[above + x] = 0;
+          continue;
+        }
+        const rnd = (Math.random() * 3) | 0;
+        let dx = x - rnd + 1;
+        if (dx < 0) dx = 0; else if (dx >= PF_W) dx = PF_W - 1;
+        const v = src - ((Math.random() * 6.5) | 0) - extra;
+        pfGrid[above + dx] = v > 0 ? v : 0;
+      }
+    }
+    const bRow = (PF_H - 1) * PF_W;
+    for (let x = 0; x < PF_W; x++) {
+      const s = pfGrid[bRow + x];
+      if (s > 0) pfGrid[bRow + x] = s - 1;
+    }
+    const d = pfImg.data;
+    for (let i = 0; i < pfGrid.length; i++) {
+      const pal = PF_PALETTE[pfGrid[i]];
+      const o = i * 4;
+      d[o] = pal[0];
+      d[o + 1] = pal[1];
+      d[o + 2] = pal[2];
+      d[o + 3] = pal[3];
+    }
+    pfCtx.putImageData(pfImg, 0, 0);
+  }
+
+  function pvInit(type) {
+    pv.type = type;
+    let seg = 15;
+    pv.len = 7.5;
+    if (type === 'long') { seg = 26; pv.len = 5.2; }
+    if (type === 'machine') { seg = 13; pv.len = 6; }
+    pv.pts = [];
+    for (let i = 0; i < seg; i++) {
+      pv.pts.push({ x: 135 + i * 4, y: 50, px: 135 + i * 4, py: 50 });
+    }
+    pv.parts = [];
+    pv.ang = -1.2;
+    pfGrid.fill(0);
+    pfCtx.clearRect(0, 0, PF_W, PF_H);
+  }
+
+  function pvStep() {
+    pvT += 0.016;
+    let ax, ay;
+    if (pv.type === 'machine') {
+      pv.ang += 0.14;
+      ax = 135 + Math.cos(pv.ang) * 20;
+      ay = 100 + Math.sin(pv.ang) * 20;
+    } else {
+      ax = 135 + Math.sin(pvT * 2.4) * 30;
+      ay = 46 + Math.sin(pvT * 1.7 + 1) * 14;
+    }
+    const pts = pv.pts;
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      const vx = (p.x - p.px) * 0.96;
+      const vy = (p.y - p.py) * 0.96;
+      p.px = p.x; p.py = p.y;
+      p.x += vx; p.y += vy + 0.5;
+    }
+    if (pv.type === 'machine') {
+      pts[0].px = pts[0].x; pts[0].py = pts[0].y;
+      pts[0].x = ax; pts[0].y = ay;
+    } else {
+      pts[0].x = ax; pts[0].y = ay; pts[0].px = ax; pts[0].py = ay;
+    }
+    for (let k = 0; k < 14; k++) {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = pts[i], b = pts[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d = Math.hypot(dx, dy) || 0.0001;
+        const diff = (d - pv.len) / d * 0.5;
+        if (i === 0) {
+          b.x -= dx * diff * 2; b.y -= dy * diff * 2;
+        } else {
+          a.x += dx * diff; a.y += dy * diff;
+          b.x -= dx * diff; b.y -= dy * diff;
+        }
+      }
+      if (pv.type === 'machine') {
+        const mdx = Math.cos(pv.ang), mdy = Math.sin(pv.ang);
+        for (let i = 1; i <= 2; i++) {
+          const prev = pts[i - 1], p = pts[i];
+          p.x += (prev.x + mdx * pv.len - p.x) * 0.8;
+          p.y += (prev.y + mdy * pv.len - p.y) * 0.8;
+        }
+      }
+    }
+    if (pv.type === 'fire') {
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a2 = pts[i], b2 = pts[i + 1];
+        const steps = Math.max(1, Math.ceil(Math.hypot(b2.x - a2.x, b2.y - a2.y) / 2));
+        for (let s = 0; s <= steps; s++) {
+          const x = ((a2.x + (b2.x - a2.x) * s / steps) / 2) | 0;
+          const y = ((a2.y + (b2.y - a2.y) * s / steps) / 2) | 0;
+          if (x >= 0 && x < PF_W && y >= 1 && y < PF_H) pfGrid[y * PF_W + x] = PF_MAX;
+        }
+      }
+      pfStep();
+    }
+  }
+
+  function pvDraw() {
+    wctx.clearRect(0, 0, wc.width, wc.height);
+    wctx.save();
+    wctx.translate(wc.width / 2 + anim.off, wc.height / 2);
+    wctx.scale(anim.scale, anim.scale);
+    wctx.globalAlpha = Math.max(0, Math.min(1, anim.alpha));
+    wctx.translate(-wc.width / 2, -wc.height / 2);
+
+    const pts = pv.pts;
+    wctx.lineCap = 'round';
+    wctx.lineJoin = 'round';
+
+    if (pv.type === 'machine') {
+      wctx.strokeStyle = '#555';
+      wctx.lineWidth = 7;
+      wctx.beginPath(); wctx.moveTo(135, 108); wctx.lineTo(135, 136); wctx.stroke();
+      wctx.strokeStyle = '#777';
+      wctx.lineWidth = 5;
+      wctx.beginPath(); wctx.moveTo(135, 100); wctx.lineTo(pts[0].x, pts[0].y); wctx.stroke();
+      wctx.beginPath(); wctx.arc(135, 100, 8, 0, Math.PI * 2);
+      wctx.fillStyle = '#4a4a4a'; wctx.fill();
+      wctx.strokeStyle = '#c8c8c8'; wctx.lineWidth = 2; wctx.stroke();
+    }
+
+    wctx.strokeStyle = '#eee';
+    wctx.lineWidth = 7;
+    wctx.beginPath();
+    wctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) wctx.lineTo(pts[i].x, pts[i].y);
+    wctx.stroke();
+
+    wctx.lineWidth = 11;
+    wctx.beginPath();
+    wctx.moveTo(pts[0].x, pts[0].y);
+    wctx.lineTo(pts[1].x, pts[1].y);
+    wctx.lineTo(pts[2].x, pts[2].y);
+    wctx.stroke();
+
+    wctx.strokeStyle = colorEl.value;
+    for (let i = 0; i < pts.length - 1; i++) {
+      const t = i / Math.max(1, pts.length - 2);
+      wctx.lineWidth = (5 - 2.5 * t) + (i < 2 ? 3.5 : 0);
+      wctx.beginPath();
+      wctx.moveTo(pts[i].x, pts[i].y);
+      wctx.lineTo(pts[i + 1].x, pts[i + 1].y);
+      wctx.stroke();
+    }
+
+    if (pv.type === 'fire') {
+      wctx.save();
+      wctx.globalCompositeOperation = 'lighter';
+      wctx.drawImage(pfCv, 0, 0, wc.width, wc.height);
+      wctx.restore();
+    }
+    wctx.restore();
+  }
+
+  function syncWhipUI() {
+    wNameEl.textContent = WHIP_TYPES[wView].label;
+    const isSel = WHIP_TYPES[wView].id === selWhip;
+    wSelectBtn.textContent = isSel ? 'Selected' : 'Select';
+    wSelEl.textContent = 'Using: ' + (WHIP_TYPES.find(t => t.id === selWhip) || WHIP_TYPES[0]).label;
+  }
+
+  function slideWhip(dir) {
+    if (anim.phase) return;
+    anim.phase = 'out';
+    anim.dir = dir;
+    anim.t0 = performance.now();
+  }
+
+  function pvLoop(ts) {
+    if (anim.phase === 'out') {
+      const k = Math.min(1, (ts - anim.t0) / 180);
+      anim.off = -anim.dir * 100 * k;
+      anim.alpha = 1 - k;
+      anim.scale = 1 - 0.18 * k;
+      if (k >= 1) {
+        wView = (wView + anim.dir + WHIP_TYPES.length) % WHIP_TYPES.length;
+        pvInit(WHIP_TYPES[wView].id);
+        syncWhipUI();
+        anim.phase = 'in';
+        anim.t0 = ts;
+      }
+    } else if (anim.phase === 'in') {
+      const k = Math.min(1, (ts - anim.t0) / 180);
+      anim.off = anim.dir * 100 * (1 - k);
+      anim.alpha = k;
+      anim.scale = 0.82 + 0.18 * k;
+      if (k >= 1) {
+        anim.phase = null;
+        anim.off = 0; anim.alpha = 1; anim.scale = 1;
+      }
+    }
+    pvStep();
+    pvDraw();
+    requestAnimationFrame(pvLoop);
+  }
+
+  document.getElementById('wPrev').addEventListener('click', () => slideWhip(-1));
+  document.getElementById('wNext').addEventListener('click', () => slideWhip(1));
+  wSelectBtn.addEventListener('click', () => {
+    selWhip = WHIP_TYPES[wView].id;
+    syncWhipUI();
+  });
+
+  pvInit('normal');
+  syncWhipUI();
+  requestAnimationFrame(pvLoop);
+
+  const ARROW_SVG = 'M0 0 L0 19 L5 14.5 L8.5 21.5 L11 20 L7.5 13.5 L14 13 Z';
+
+  function buildCursorGrid(cursors) {
+    gridEl.innerHTML = '';
+    const def = document.createElement('div');
+    def.className = 'curItem';
+    def.dataset.cur = 'default';
+    def.title = 'Default (uses your color)';
+    def.innerHTML = '<svg width="26" height="30" viewBox="-2 -2 18 26"><path id="defArrow" d="' + ARROW_SVG + '" fill="' + colorEl.value + '" stroke="#888" stroke-width="1.5" stroke-linejoin="round"/></svg>';
+    gridEl.appendChild(def);
+    for (const f of cursors) {
+      const d = document.createElement('div');
+      d.className = 'curItem';
+      d.dataset.cur = f;
+      d.title = f.replace(/\.png$/i, '').replace(/_/g, ' ');
+      d.innerHTML = '<img src="assets/cursors/' + f + '" alt="">';
+      gridEl.appendChild(d);
+    }
+    gridEl.addEventListener('click', e => {
+      const item = e.target.closest('.curItem');
+      if (!item) return;
+      selCursor = item.dataset.cur;
+      syncCursorSel();
+    });
+    syncCursorSel();
+  }
+
+  function syncCursorSel() {
+    for (const el of gridEl.children) {
+      el.classList.toggle('sel', el.dataset.cur === selCursor);
+    }
+  }
+
+  colorEl.addEventListener('input', () => {
+    const arrow = document.getElementById('defArrow');
+    if (arrow) arrow.setAttribute('fill', colorEl.value);
+  });
+
+  window.setup.get().then(cfg => {
+    roleEl.value = cfg.role || 'whipper';
+    serverEl.value = cfg.server || '';
+    roomEl.value = cfg.room || '';
+    nameEl.value = cfg.name || '';
+    colorEl.value = cfg.color || '#000000';
+    volEl.value = Math.round((typeof cfg.volume === 'number' ? cfg.volume : 1) * 100);
+    selWhip = cfg.whip || 'normal';
+    wView = Math.max(0, WHIP_TYPES.findIndex(t => t.id === selWhip));
+    pvInit(WHIP_TYPES[wView].id);
+    syncWhipUI();
+    selCursor = cfg.cursor || 'default';
+    buildCursorGrid(cfg.cursors || []);
+    if (cfg.hostedUrl) {
+      serverEl.value = cfg.hostedUrl;
+      hostStatus.textContent = 'Server is running.';
+    }
+    connStatus.textContent = cfg.status || '';
+    syncVisibility();
+  });
+
+  window.setup.onStatus(status => {
+    connStatus.textContent = status;
+  });
+
+  document.getElementById('save').addEventListener('click', () => {
+    window.setup.save({
+      role: roleEl.value,
+      server: serverEl.value,
+      room: roomEl.value,
+      name: nameEl.value,
+      color: colorEl.value,
+      cursor: selCursor,
+      whip: selWhip,
+      volume: volEl.value / 100,
+    });
+  });
+
+  hostBtn.addEventListener('click', () => {
+    hostStatus.textContent = 'Starting server, plz wait...';
+    window.setup.hostServer();
+  });
+
+  window.setup.onHostResult(result => {
+    if (result.error) {
+      hostStatus.textContent = result.error;
+      return;
+    }
+    serverEl.value = result.url;
+    hostStatus.textContent = 'Server is running and the link is copied. (Old links die every restart, so always send the newest one!)';
+  });
+
+  document.getElementById('copyBtn').addEventListener('click', () => {
+    if (!serverEl.value.trim()) {
+      hostStatus.textContent = 'Nothing to copy yet, host the server first.';
+      return;
+    }
+    window.setup.copyServer(serverEl.value);
+    hostStatus.textContent = 'Link copied';
+  });
+
+  document.getElementById('exitBtn').addEventListener('click', () => {
+    window.setup.exitApp();
+  });
+</script>
+</body>
+</html>

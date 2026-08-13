@@ -1,0 +1,56 @@
+{
+  "name": "openwhip",
+  "version": "1.1.0",
+  "description": "Whip Claude into shape",
+  "license": "MIT",
+  "main": "main.js",
+  "bin": {
+    "openwhip": "bin/openwhip.js",
+    "badclaude": "bin/openwhip.js"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "electron",
+    "tray",
+    "overlay",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GitFrog1111/OpenWhip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GitFrog1111/OpenWhip/issues"
+  },
+  "homepage": "https://github.com/GitFrog1111/OpenWhip#readme",
+  "files": [
+    "main.js",
+    "preload.js",
+    "preload-setup.js",
+    "overlay.html",
+    "setup.html",
+    "sounds",
+    "assets",
+    "bin/openwhip.js",
+    "bin/badclaude.js",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "server": "node server/start.js",
+    "pack": "npm pack"
+  },
+  "dependencies": {
+    "electron": "^33.0.0",
+    "koffi": "^3.1.4",
+    "ws": "^8.18.0"
+  }
+}
