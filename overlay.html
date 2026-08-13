@@ -104,13 +104,44 @@ function ensureHeatCapture() {
       heatVideo.muted = true;
       return heatVideo.play();
     })
-    .then(() => { heatPending = false; })
+    .then(() => {
+      heatPending = false;
+      warmHeatShader(0);
+    })
     .catch(() => {
       heatVideo = null;
       heatFailed = true;
       heatPending = false;
       window.bridge.setProtect(false);
     });
+}
+
+function warmHeatShader(attempt) {
+  if (!heatVideo) return;
+  if (heatVideo.videoWidth === 0) {
+    if (attempt < 25) setTimeout(() => warmHeatShader(attempt + 1), 120);
+    return;
+  }
+  initGL();
+  if (!gl) return;
+  try {
+    if (glCv.width !== W || glCv.height !== H) {
+      glCv.width = W;
+      glCv.height = H;
+    }
+    gl.viewport(0, 0, W, H);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, glTexScreen);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, heatVideo);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, glTexHeat);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, fireGW, fireGH, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, fireGrid);
+    gl.uniform1f(glULoc.time, 0);
+    gl.uniform2f(glULoc.texel, 1 / W, 1 / H);
+    gl.uniform3f(glULoc.flash, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  } catch {}
 }
 
 function stopHeatCapture() {
