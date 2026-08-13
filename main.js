@@ -20,7 +20,7 @@ let ownWhipUp = false;
 const clientId = Math.random().toString(36).slice(2, 10);
 
 let setCursorPos = null;
-let getAsyncKeyState = null;
+let altDownFn = null;
 if (process.platform === 'win32') {
   try {
     const koffi = require('koffi');
@@ -28,7 +28,7 @@ if (process.platform === 'win32') {
     const winSetCursorPos = user32.func('bool __stdcall SetCursorPos(int x, int y)');
     setCursorPos = (x, y) => winSetCursorPos(x, y);
     const winGetAsyncKeyState = user32.func('int16_t __stdcall GetAsyncKeyState(int vKey)');
-    getAsyncKeyState = (vk) => winGetAsyncKeyState(vk);
+    altDownFn = () => (winGetAsyncKeyState(0x12) & 0x8000) !== 0;
   } catch (e) {
     console.warn('koffi not available, mouse knockback disabled:', e.message);
   }
@@ -36,6 +36,22 @@ if (process.platform === 'win32') {
   setCursorPos = (x, y) => {
     execFile('xdotool', ['mousemove', String(x), String(y)], () => {});
   };
+  try {
+    const koffi = require('koffi');
+    const x11 = koffi.load('libX11.so.6');
+    const XOpenDisplay = x11.func('void *XOpenDisplay(const char *name)');
+    const XQueryKeymap = x11.func('int XQueryKeymap(void *display, _Out_ uint8_t keys[32])');
+    const disp = XOpenDisplay(null);
+    if (disp) {
+      const keymap = new Uint8Array(32);
+      altDownFn = () => {
+        XQueryKeymap(disp, keymap);
+        return !!((keymap[8] & 0x01) || (keymap[13] & 0x10));
+      };
+    }
+  } catch (e) {
+    console.warn('X11 alt detection unavailable, gun will auto-fire:', e.message);
+  }
 }
 
 const ICON_PATH = path.join(__dirname, 'assets', 'icon.png');
@@ -112,7 +128,7 @@ function createOverlay() {
       config ? config.volume : 1,
       config ? config.whip : 'normal',
       !!(config && config.clickThrough),
-      !!getAsyncKeyState
+      !!altDownFn
     );
     if (spawnQueued && overlay && overlay.isVisible()) {
       spawnQueued = false;
@@ -621,8 +637,9 @@ if (!app.requestSingleInstanceLock()) {
       const p = screen.getCursorScreenPoint();
       if (overlay && overlayReady && overlay.isVisible()) {
         overlay.webContents.send('local-mouse', p.x - b.x, p.y - b.y);
-        if (getAsyncKeyState && config.role !== 'victim') {
-          const altDown = (getAsyncKeyState(0x12) & 0x8000) !== 0;
+        if (altDownFn && config.role !== 'victim') {
+          let altDown = false;
+          try { altDown = altDownFn(); } catch {}
           if (altDown && !altWasDown) {
             overlay.webContents.send('fire-gun');
           }
