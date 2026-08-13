@@ -259,9 +259,14 @@ function handleRemoteInner(msg) {
     return;
   }
   if (msg.type === 'knock') {
-    if (msg.to === clientId && config.role === 'victim'
-        && typeof msg.vx === 'number' && typeof msg.vy === 'number') {
+    if (typeof msg.vx !== 'number' || typeof msg.vy !== 'number') return;
+    if (msg.to === clientId && config.role === 'victim') {
       knockCursor(msg.vx, msg.vy);
+      if (msg.k === 'gun' && overlay && overlayReady && overlay.isVisible()) {
+        overlay.webContents.send('self-hit', msg.vx, msg.vy);
+      }
+    } else if (msg.k === 'gun' && overlay && overlayReady && overlay.isVisible()) {
+      overlay.webContents.send('other-hit', String(msg.to || ''), msg.vx, msg.vy);
     }
     return;
   }
@@ -496,9 +501,9 @@ ipcMain.on('mouse-knock', (e, vx, vy) => {
     knockCursor(vx, vy);
   }
 });
-ipcMain.on('send-hit', (e, vid, vx, vy) => {
+ipcMain.on('send-hit', (e, vid, vx, vy, kind) => {
   if (typeof vid === 'string' && typeof vx === 'number' && typeof vy === 'number') {
-    send({ type: 'knock', to: vid, vx, vy });
+    send({ type: 'knock', to: vid, vx, vy, k: kind === 'gun' ? 'gun' : undefined });
   }
 });
 ipcMain.on('host-server', () => startHosting());
