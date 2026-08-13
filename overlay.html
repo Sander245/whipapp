@@ -304,8 +304,13 @@ let myClickThrough = false;
 let manualFire = false;
 let gunAngle = 0;
 let gunFlip = false;
+let gunRecoil = 0;
 let lastShot = 0;
 const bullets = [];
+const pickCv = document.createElement('canvas');
+pickCv.width = 6;
+pickCv.height = 6;
+const pickCtx = pickCv.getContext('2d', { willReadFrequently: true });
 let audioCtx = null;
 const cursorImgCache = {};
 
@@ -317,7 +322,7 @@ const GUN_GRIP_Y = 0.61;
 const GUN_MUZZLE_X = 0.90;
 const GUN_MUZZLE_Y = 0.33;
 const GUN_KNOCK = 470;
-const GUN_COOLDOWN = 3000;
+const GUN_COOLDOWN = 500;
 const BULLET_SPEED = 110;
 
 function sfxVol() {
@@ -577,7 +582,9 @@ function drawSparks() {
   ctx.lineCap = 'round';
   ctx.lineWidth = 2;
   for (const s of sparks) {
-    ctx.strokeStyle = 'rgba(255,' + Math.round(150 + 105 * s.life) + ',' + Math.round(70 * s.life) + ',' + (0.9 * s.life) + ')';
+    ctx.strokeStyle = s.col
+      ? 'rgba(' + s.col[0] + ',' + s.col[1] + ',' + s.col[2] + ',' + (0.9 * s.life) + ')'
+      : 'rgba(255,' + Math.round(150 + 105 * s.life) + ',' + Math.round(70 * s.life) + ',' + (0.9 * s.life) + ')';
     ctx.beginPath();
     ctx.moveTo(s.x, s.y);
     ctx.lineTo(s.x - s.vx * 1.6, s.y - s.vy * 1.6);
@@ -645,14 +652,110 @@ function simulateKnockThuds(x0, y0, kvx, kvy) {
   }
 }
 
-function drawGun(cx2, x, y, ang, flip) {
+function drawGun(cx2, x, y, ang, flip, recoil) {
   if (!gunImgEl.complete || !gunImgEl.naturalWidth) return;
+  const r = recoil || 0;
   cx2.save();
   cx2.translate(x, y);
   cx2.rotate(ang);
   if (flip) cx2.scale(1, -1);
+  if (r > 0) {
+    cx2.translate(-r * 14, 0);
+    cx2.rotate(-r * 0.3);
+  }
   cx2.drawImage(gunImgEl, -GUN_GRIP_X * GUN_S, -GUN_GRIP_Y * GUN_S, GUN_S, GUN_S);
+  if (r > 0.55) {
+    const f = (r - 0.55) / 0.45;
+    const mxL = (GUN_MUZZLE_X - GUN_GRIP_X) * GUN_S;
+    const myL = (GUN_MUZZLE_Y - GUN_GRIP_Y) * GUN_S;
+    cx2.globalCompositeOperation = 'lighter';
+    const gr = cx2.createRadialGradient(mxL, myL, 0, mxL, myL, 34 * f + 6);
+    gr.addColorStop(0, 'rgba(255,255,230,' + 0.95 * f + ')');
+    gr.addColorStop(0.4, 'rgba(255,190,80,' + 0.7 * f + ')');
+    gr.addColorStop(1, 'rgba(255,120,20,0)');
+    cx2.fillStyle = gr;
+    cx2.beginPath();
+    cx2.arc(mxL, myL, 34 * f + 6, 0, Math.PI * 2);
+    cx2.fill();
+    cx2.strokeStyle = 'rgba(255,230,150,' + 0.85 * f + ')';
+    cx2.lineWidth = 3;
+    cx2.lineCap = 'round';
+    for (const sa of [-0.35, 0, 0.35]) {
+      cx2.beginPath();
+      cx2.moveTo(mxL + 4, myL);
+      cx2.lineTo(mxL + (24 + 26 * f) * Math.cos(sa), myL + (24 + 26 * f) * Math.sin(sa));
+      cx2.stroke();
+    }
+  }
   cx2.restore();
+  if (r > 0.55) {
+    const m = gunMuzzle(x, y, ang, flip);
+    seedHeatBlob(m.x, m.y);
+  }
+}
+
+function seedHeatBlob(x, y) {
+  if (!fireGrid) return;
+  const gx = (x / FIRE_SCALE) | 0;
+  const gy = (y / FIRE_SCALE) | 0;
+  const R = 5;
+  for (let dy = -R; dy <= R; dy++) {
+    for (let dx = -R; dx <= R; dx++) {
+      if (dx * dx + dy * dy > R * R) continue;
+      const X = gx + dx;
+      const Y = gy + dy;
+      if (X >= 0 && X < fireGW && Y >= 1 && Y < fireGH) {
+        fireGrid[Y * fireGW + X] = 110;
+        if (Y < fireTop) fireTop = Y;
+        if (Y > fireBottom) fireBottom = Y;
+      }
+    }
+  }
+  if (fireActive < 90) fireActive = 90;
+  ensureHeatCapture();
+}
+
+function sampleScreenColors(x, y) {
+  if (!heatVideo || heatVideo.videoWidth === 0) return null;
+  try {
+    const kx = heatVideo.videoWidth / W;
+    const ky = heatVideo.videoHeight / H;
+    pickCtx.drawImage(heatVideo, Math.max(0, (x - 24) * kx), Math.max(0, (y - 24) * ky), 48 * kx, 48 * ky, 0, 0, 6, 6);
+    const d = pickCtx.getImageData(0, 0, 6, 6).data;
+    const cols = [];
+    for (let i = 0; i < 8; i++) {
+      const o = ((Math.random() * 36) | 0) * 4;
+      cols.push([d[o], d[o + 1], d[o + 2]]);
+    }
+    return cols;
+  } catch {
+    return null;
+  }
+}
+
+function spawnEdgeParticles(x, y, vx, vy) {
+  let rvx = vx;
+  let rvy = vy;
+  if (x <= 0 || x >= W) rvx = -vx;
+  if (y <= 0 || y >= H) rvy = -vy;
+  const cols = sampleScreenColors(x, y);
+  const d = Math.hypot(rvx, rvy) || 1;
+  const ux = rvx / d;
+  const uy = rvy / d;
+  for (let i = 0; i < 16; i++) {
+    const spread = (Math.random() - 0.5) * 2.2;
+    const cs = Math.cos(spread);
+    const sn = Math.sin(spread);
+    const sp = 2 + Math.random() * 10;
+    sparks.push({
+      x, y,
+      vx: (ux * cs - uy * sn) * sp,
+      vy: (ux * sn + uy * cs) * sp - 1.5,
+      life: 1,
+      decay: 0.03 + Math.random() * 0.04,
+      col: cols ? cols[(Math.random() * cols.length) | 0] : null,
+    });
+  }
 }
 
 function gunMuzzle(x, y, ang, flip) {
@@ -727,6 +830,7 @@ function fireGunNow() {
   const now = Date.now();
   if (now - lastShot < GUN_COOLDOWN) return;
   lastShot = now;
+  gunRecoil = 1;
   const m = gunMuzzle(mouseX, mouseY, gunAngle, gunFlip);
   bullets.push({
     x: m.x, y: m.y,
@@ -760,7 +864,12 @@ function updateBullets(now) {
         break;
       }
     }
-    if (hit || bl.life <= 0 || bl.x < -100 || bl.x > W + 100 || bl.y < -100 || bl.y > H + 100) {
+    if (hit || bl.life <= 0) {
+      bullets.splice(i, 1);
+      continue;
+    }
+    if (bl.x < 0 || bl.x > W || bl.y < 0 || bl.y > H) {
+      spawnEdgeParticles(clamp(bl.x, 0, W), clamp(bl.y, 0, H), bl.vx, bl.vy);
       bullets.splice(i, 1);
     }
   }
@@ -1204,6 +1313,8 @@ function update() {
 
   updateBullets(now);
   updateSparks();
+  gunRecoil *= 0.85;
+  if (gunRecoil < 0.02) gunRecoil = 0;
   if (!remoteMode && myWhipType === 'gun' && whip && !dropping) updateGun(now);
 
   if (!whip && remoteWhips.size === 0 && hadContent) {
@@ -1310,7 +1421,7 @@ function update() {
       ];
     }
     if (myWhipType === 'gun') {
-      state.g = [Math.round(gunAngle * 1000) / 1000, gunFlip ? 1 : 0];
+      state.g = [Math.round(gunAngle * 1000) / 1000, gunFlip ? 1 : 0, Math.round(gunRecoil * 100) / 100];
       if (bullets.length) {
         state.b = [];
         for (const bl of bullets) {
@@ -1441,7 +1552,7 @@ function draw() {
       drawMachine(rw.machine[0] * W, rw.machine[1] * H, rw.pts[0]);
     }
     if (rw.type === 'gun' && rw.pts.length && rw.gun) {
-      drawGun(ctx, rw.pts[0].x, rw.pts[0].y, rw.gun[0], !!rw.gun[1]);
+      drawGun(ctx, rw.pts[0].x, rw.pts[0].y, rw.gun[0], !!rw.gun[1], rw.gun[2] || 0);
       if (rw.bullets) {
         for (const bl of rw.bullets) drawBullet(ctx, bl);
       }
@@ -1455,7 +1566,7 @@ function draw() {
       drawMachine(machineHubX, machineHubY, whip[0]);
     }
     if (myWhipType === 'gun') {
-      drawGun(ctx, whip[0].x, whip[0].y, gunAngle, gunFlip);
+      drawGun(ctx, whip[0].x, whip[0].y, gunAngle, gunFlip, gunRecoil);
     } else {
       drawWhip(whip, myColor);
     }
