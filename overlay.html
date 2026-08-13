@@ -552,42 +552,10 @@ function playGunfire(xNorm) {
   playSnd('gunfire.mp3', sfxVol(), 1, panFrom(xNorm));
 }
 
-function synthImpact(vol, pan) {
-  ensureAudioCtx();
-  const t0 = audioCtx.currentTime;
-  const pn = audioCtx.createStereoPanner();
-  pn.pan.value = pan;
-  pn.connect(audioCtx.destination);
-  const o1 = audioCtx.createOscillator();
-  const g1 = audioCtx.createGain();
-  o1.type = 'square';
-  o1.frequency.setValueAtTime(1500, t0);
-  o1.frequency.exponentialRampToValueAtTime(400, t0 + 0.08);
-  g1.gain.setValueAtTime(vol * 0.4, t0);
-  g1.gain.exponentialRampToValueAtTime(0.001, t0 + 0.09);
-  o1.connect(g1);
-  g1.connect(pn);
-  o1.start(t0);
-  o1.stop(t0 + 0.1);
-  const o2 = audioCtx.createOscillator();
-  const g2 = audioCtx.createGain();
-  o2.type = 'sine';
-  o2.frequency.setValueAtTime(260, t0);
-  o2.frequency.exponentialRampToValueAtTime(70, t0 + 0.12);
-  g2.gain.setValueAtTime(vol, t0);
-  g2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.15);
-  o2.connect(g2);
-  g2.connect(pn);
-  o2.start(t0);
-  o2.stop(t0 + 0.16);
-}
-
 function playImpact(xNorm) {
   const vol = sfxVol();
   if (vol <= 0) return;
-  const pan = panFrom(xNorm);
-  playSnd('cursorimpact.wav', Math.min(1.5, vol * 1.8), 1, pan);
-  synthImpact(Math.min(1, vol * 1.1), pan);
+  playSnd('cursorimpact.wav', Math.min(1.5, vol * 1.8), 1, panFrom(xNorm));
 }
 
 const sparks = [];
@@ -641,64 +609,6 @@ function drawSparks() {
   ctx.restore();
 }
 
-function playThud(intensity, xNorm) {
-  const vol = sfxVol() * intensity;
-  if (vol <= 0.01) return;
-  ensureAudioCtx();
-  const t0 = audioCtx.currentTime;
-  const pn = audioCtx.createStereoPanner();
-  pn.pan.value = panFrom(xNorm);
-  pn.connect(audioCtx.destination);
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.type = 'sine';
-  osc.frequency.setValueAtTime(85 + 70 * intensity, t0);
-  osc.frequency.exponentialRampToValueAtTime(42, t0 + 0.13);
-  gain.gain.setValueAtTime(Math.min(1, vol * 2), t0);
-  gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
-  osc.connect(gain);
-  gain.connect(pn);
-  osc.start(t0);
-  osc.stop(t0 + 0.2);
-  const o2 = audioCtx.createOscillator();
-  const g2 = audioCtx.createGain();
-  o2.type = 'triangle';
-  o2.frequency.setValueAtTime(240 + 120 * intensity, t0);
-  o2.frequency.exponentialRampToValueAtTime(90, t0 + 0.06);
-  g2.gain.setValueAtTime(Math.min(0.7, vol * 1.2), t0);
-  g2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.08);
-  o2.connect(g2);
-  g2.connect(pn);
-  o2.start(t0);
-  o2.stop(t0 + 0.09);
-}
-
-function simulateKnockThuds(x0, y0, kvx, kvy) {
-  let x = x0;
-  let y = y0;
-  let vX = kvx;
-  let vY = kvy;
-  let ticks = 0;
-  let count = 0;
-  while (ticks < 150 && count < 4 && (Math.abs(vX) > 0.7 || Math.abs(vY) > 0.7)) {
-    x += vX;
-    y += vY;
-    vX *= 0.93;
-    vY *= 0.93;
-    let impact = 0;
-    if (x < 0) { x = 0; impact = Math.abs(vX); vX = Math.abs(vX) * 0.65; }
-    else if (x > W - 1) { x = W - 1; impact = Math.abs(vX); vX = -Math.abs(vX) * 0.65; }
-    if (y < 0) { y = 0; impact = Math.max(impact, Math.abs(vY)); vY = Math.abs(vY) * 0.65; }
-    else if (y > H - 1) { y = H - 1; impact = Math.max(impact, Math.abs(vY)); vY = -Math.abs(vY) * 0.65; }
-    if (impact > 12) {
-      count++;
-      const i = Math.min(1, impact / 70);
-      const px = x / W;
-      setTimeout(() => playThud(i, px), ticks * 16);
-    }
-    ticks++;
-  }
-}
 
 function drawGun(cx2, x, y, ang, flip, recoil) {
   if (!gunImgEl.complete || !gunImgEl.naturalWidth) return;
@@ -962,7 +872,6 @@ function updateBullets(now) {
         window.bridge.sendHit(vid, bl.vx / d * GUN_KNOCK, bl.vy / d * GUN_KNOCK, 'gun');
         spawnSparks(c.x, c.y, bl.vx, bl.vy);
         playImpact(c.x / W);
-        simulateKnockThuds(c.x, c.y, bl.vx / d * GUN_KNOCK, bl.vy / d * GUN_KNOCK);
         hit = true;
         break;
       }
@@ -1388,7 +1297,6 @@ function checkVictimHits(now) {
       k = Math.min(speed * P.knockScale * 1.6, P.knockMax * 3);
     }
     window.bridge.sendHit(vid, pvx / speed * k, pvy / speed * k);
-    simulateKnockThuds(c.x, c.y, pvx / speed * k, pvy / speed * k);
     lastHitByVictim.set(vid, now);
     if (myWhipType === 'machine') {
       lastMachineHit = now;
@@ -1757,12 +1665,8 @@ window.bridge.onOtherHit((to, vx, vy, kind) => {
     spawnSparks(c.x, c.y, vx, vy);
     playImpact(c.x / W);
   }
-  simulateKnockThuds(c.x, c.y, vx, vy);
 });
 
-window.bridge.onWallThud((intensity, x) => {
-  if (typeof intensity === 'number') playThud(Math.max(0, Math.min(1, intensity)), x);
-});
 
 window.bridge.onSetMuted(m => {
   muted = !!m;

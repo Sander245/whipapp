@@ -365,9 +365,6 @@ function knockCursor(vx, vy) {
     else if (x > b.x + b.width - 1) { x = b.x + b.width - 1; impact = Math.abs(vx); vx = -Math.abs(vx) * 0.65; }
     if (y < b.y) { y = b.y; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65; }
     else if (y > b.y + b.height - 1) { y = b.y + b.height - 1; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65 * -1; }
-    if (impact > 12 && overlay && overlayReady && overlay.isVisible()) {
-      overlay.webContents.send('wall-thud', Math.min(1, impact / 70), (x - b.x) / b.width);
-    }
     lastWX = Math.round(x);
     lastWY = Math.round(y);
     setCursorPos(lastWX, lastWY);
