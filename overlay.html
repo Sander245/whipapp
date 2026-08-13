@@ -1095,7 +1095,13 @@ function drawFire() {
     fireBottom = 0;
     fireREnd = -1;
     fctx.clearRect(0, 0, fireGW, fireGH);
-    stopHeatCapture();
+    let gunVisible = !remoteMode && myWhipType === 'gun' && !!whip;
+    if (!gunVisible) {
+      for (const rw of remoteWhips.values()) {
+        if (rw.type === 'gun') { gunVisible = true; break; }
+      }
+    }
+    if (!gunVisible) stopHeatCapture();
     return;
   }
   stepFire();
@@ -1402,6 +1408,7 @@ function update() {
 
   if (!whip && remoteWhips.size === 0 && hadContent) {
     hadContent = false;
+    stopHeatCapture();
     window.bridge.hideOverlay();
   }
 
@@ -1684,6 +1691,11 @@ window.bridge.onSpawnWhip(() => {
   handleAngle = P.baseTargetAngle;
   handleAngVel = 0;
   window.bridge.setCapture(!myClickThrough);
+  if (myWhipType === 'gun') {
+    ensureHeatCapture();
+    sndBuf('gunfire.mp3').catch(() => {});
+    sndBuf('cursorimpact.wav').catch(() => {});
+  }
 });
 
 window.bridge.onDropWhip(() => {
@@ -1763,6 +1775,7 @@ window.bridge.onRemoteWhip((id, pts, color, type, name, machine, gun, bullets2) 
       arr.push({ x, y, px: x, py: y });
     }
     remoteWhips.set(id, { pts: arr, t: now, color: safeColor, type: safeType, name: safeName, machine: safeMachine, gun: safeGun, bullets: safeBullets });
+    if (safeType === 'gun') ensureHeatCapture();
   } else {
     for (let i = 0; i < n; i++) {
       const w = rw.pts[i];
