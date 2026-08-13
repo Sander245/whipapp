@@ -500,7 +500,9 @@ function playGunfire(xNorm) {
 }
 
 function playImpact(xNorm) {
-  playSnd('cursorimpact.wav', sfxVol(), 1, panFrom(xNorm));
+  const vol = sfxVol();
+  if (vol <= 0) return;
+  playSnd('cursorimpact.wav', Math.min(1.5, vol * 1.8), 1, panFrom(xNorm));
 }
 
 const sparks = [];
