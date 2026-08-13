@@ -326,6 +326,8 @@ let myWhipType = 'normal';
 let segCount = 28;
 let whipGravity = 1.2;
 let whipDamping = 0.96;
+let metalHX = 0;
+let metalHY = 0;
 let machineAngle = 0;
 let machineSpeed = 0;
 let machineHubX = 0, machineHubY = 0;
@@ -397,7 +399,12 @@ function haloFor(hex) {
 }
 
 const WHIP_CRACK_SOUNDS = ['A.mp3', 'B.mp3', 'C.mp3', 'D.mp3', 'E.mp3'];
-const METAL_CRACK_SOUNDS = ['metalA.wav', 'metalB.wav'];
+
+function crackRateFor(type) {
+  if (type === 'metal') return 0.65;
+  if (type === 'long') return 0.85;
+  return 1;
+}
 
 document.addEventListener('mousemove', e => {
   if (remoteMode) return;
@@ -422,8 +429,10 @@ function spawnWhip(mx, my) {
   whipGravity = P.gravity;
   whipDamping = P.damping;
   if (myWhipType === 'metal') {
-    whipGravity = P.gravity * 1.7;
-    whipDamping = 0.975;
+    whipGravity = P.gravity * 2.6;
+    whipDamping = 0.98;
+    metalHX = mx;
+    metalHY = my;
   }
   machineAngle = -Math.PI / 2;
   machineSpeed = P.machineBaseSpeed;
@@ -969,11 +978,10 @@ function updateBullets(now) {
   }
 }
 
-function playCrackSound(rate, xNorm, type) {
+function playCrackSound(rate, xNorm) {
   const vol = sfxVol();
   if (vol <= 0) return;
-  const pool = type === 'metal' ? METAL_CRACK_SOUNDS : WHIP_CRACK_SOUNDS;
-  const name = pool[Math.floor(Math.random() * pool.length)];
+  const name = WHIP_CRACK_SOUNDS[Math.floor(Math.random() * WHIP_CRACK_SOUNDS.length)];
   playSnd(name, vol, rate || 1, panFrom(xNorm));
 }
 
@@ -1188,7 +1196,7 @@ function drawWhipName(w, name, color) {
 }
 
 function updateHandleAim() {
-  if (dropping || myWhipType === 'machine') return;
+  if (dropping || myWhipType === 'machine' || myWhipType === 'metal') return;
   const mvx = mouseX - prevMouseX;
   const mvy = mouseY - prevMouseY;
   const delta = clamp(
@@ -1220,7 +1228,7 @@ function applyMachinePose() {
 }
 
 function applyBasePose() {
-  if (!whip || dropping || myWhipType === 'machine') return;
+  if (!whip || dropping || myWhipType === 'machine' || myWhipType === 'metal') return;
   const dx = Math.cos(handleAngle);
   const dy = Math.sin(handleAngle);
   const guided = Math.min(P.basePoseSegments, whip.length - 1);
@@ -1456,6 +1464,13 @@ function update() {
       whip[0].py = whip[0].y;
       whip[0].x = hx;
       whip[0].y = hy;
+    } else if (myWhipType === 'metal') {
+      metalHX += (mouseX - metalHX) * 0.11;
+      metalHY += (mouseY - metalHY) * 0.11;
+      whip[0].px = whip[0].x;
+      whip[0].py = whip[0].y;
+      whip[0].x = metalHX;
+      whip[0].y = metalHY;
     } else {
       whip[0].x = mouseX;
       whip[0].y = mouseY;
@@ -1504,7 +1519,7 @@ function update() {
   if (!dropping && myWhipType !== 'machine' && myWhipType !== 'gun' && tipVel > crackThresh) {
     if (now - whipSpawnTime >= P.firstCrackGraceMs && now - lastCrackTime > P.crackCooldownMs) {
       lastCrackTime = now;
-      playCrackSound(myWhipType === 'long' ? 0.85 : 1, tip.x / W, myWhipType);
+      playCrackSound(crackRateFor(myWhipType), tip.x / W);
       window.bridge.whipCrack(tip.x / W);
     }
   }
@@ -1812,7 +1827,7 @@ window.bridge.onRemoteCrack((t, x) => {
   if (t === 'gun') {
     playGunfire(x);
   } else {
-    playCrackSound(t === 'long' ? 0.85 : 1, x, t);
+    playCrackSound(crackRateFor(t), x);
   }
 });
 

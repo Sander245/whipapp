@@ -284,7 +284,7 @@
       const vx = (p.x - p.px) * 0.96;
       const vy = (p.y - p.py) * 0.96;
       p.px = p.x; p.py = p.y;
-      p.x += vx; p.y += vy + (pv.type === 'metal' ? 0.9 : 0.5);
+      p.x += vx; p.y += vy + (pv.type === 'metal' ? 1.3 : 0.5);
     }
     if (pv.type === 'machine') {
       pts[0].px = pts[0].x; pts[0].py = pts[0].y;
