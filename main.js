@@ -280,6 +280,8 @@ function handleRemoteInner(msg) {
     overlay.webContents.send('remote-gone', id);
   } else if (msg.type === 'crack') {
     overlay.webContents.send('remote-crack', msg.t, msg.x);
+  } else if (msg.type === 'thud' && typeof msg.i === 'number') {
+    overlay.webContents.send('wall-thud', msg.i, msg.x);
   } else if (msg.type === 'vmouse' && typeof msg.x === 'number' && typeof msg.y === 'number') {
     if (overlay.isVisible()) overlay.webContents.send('victim-mouse', id, msg.x, msg.y, msg.n, msg.c, msg.cur);
   }
@@ -349,8 +351,13 @@ function knockCursor(vx, vy) {
     else if (x > b.x + b.width - 1) { x = b.x + b.width - 1; impact = Math.abs(vx); vx = -Math.abs(vx) * 0.65; }
     if (y < b.y) { y = b.y; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65; }
     else if (y > b.y + b.height - 1) { y = b.y + b.height - 1; impact = Math.max(impact, Math.abs(vy)); vy = Math.abs(vy) * 0.65 * -1; }
-    if (impact > 12 && overlay && overlayReady && overlay.isVisible()) {
-      overlay.webContents.send('wall-thud', Math.min(1, impact / 70), (x - b.x) / b.width);
+    if (impact > 12) {
+      const intensity = Math.min(1, impact / 70);
+      const xn = (x - b.x) / b.width;
+      if (overlay && overlayReady && overlay.isVisible()) {
+        overlay.webContents.send('wall-thud', intensity, xn);
+      }
+      send({ type: 'thud', i: intensity, x: xn });
     }
     lastWX = Math.round(x);
     lastWY = Math.round(y);
