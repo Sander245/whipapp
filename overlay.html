@@ -582,7 +582,12 @@ function updateGun(now) {
   }
   let aimed = false;
   if (target) {
-    const want = Math.atan2(target.y - mouseY, target.x - mouseX);
+    const dx0 = target.x - mouseX;
+    const dy0 = target.y - mouseY;
+    const d = Math.hypot(dx0, dy0);
+    let want = Math.atan2(dy0, dx0);
+    const my = (GUN_MUZZLE_Y - GUN_GRIP_Y) * GUN_S * (gunFlip ? -1 : 1);
+    if (d > Math.abs(my) + 1) want -= Math.asin(my / d);
     gunAngle = wrapPi(gunAngle + wrapPi(want - gunAngle) * 0.3);
     aimed = Math.abs(wrapPi(want - gunAngle)) < 0.12;
   }
