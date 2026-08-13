@@ -12,7 +12,7 @@ contextBridge.exposeInMainWorld('bridge', {
   sendMouseKnock: (vx, vy) => ipcRenderer.send('mouse-knock', vx, vy),
   sendHit: (vid, vx, vy, kind) => ipcRenderer.send('send-hit', vid, vx, vy, kind),
   onSelfHit: (fn) => ipcRenderer.on('self-hit', (e, vx, vy) => fn(vx, vy)),
-  onOtherHit: (fn) => ipcRenderer.on('other-hit', (e, to, vx, vy) => fn(to, vx, vy)),
+  onOtherHit: (fn) => ipcRenderer.on('other-hit', (e, to, vx, vy, kind) => fn(to, vx, vy, kind)),
   onVictimMouse: (fn) => ipcRenderer.on('victim-mouse', (e, id, x, y, name, color, cur) => fn(id, x, y, name, color, cur)),
   onLocalMouse: (fn) => ipcRenderer.on('local-mouse', (e, x, y) => fn(x, y)),
   onSpawnWhip: (fn) => ipcRenderer.on('spawn-whip', () => fn()),
