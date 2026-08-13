@@ -686,35 +686,100 @@ function drawGun(cx2, x, y, ang, flip, recoil) {
     const f = (r - 0.55) / 0.45;
     const mxL = (GUN_MUZZLE_X - GUN_GRIP_X) * GUN_S;
     const myL = (GUN_MUZZLE_Y - GUN_GRIP_Y) * GUN_S;
+    cx2.save();
+    cx2.translate(mxL, myL);
     cx2.globalCompositeOperation = 'lighter';
-    const gr = cx2.createRadialGradient(mxL, myL, 0, mxL, myL, 34 * f + 6);
-    gr.addColorStop(0, 'rgba(255,255,230,' + 0.95 * f + ')');
-    gr.addColorStop(0.4, 'rgba(255,190,80,' + 0.7 * f + ')');
-    gr.addColorStop(1, 'rgba(255,120,20,0)');
-    cx2.fillStyle = gr;
+
+    const glowR = 42 * f + 12;
+    const glow = cx2.createRadialGradient(0, 0, 0, 0, 0, glowR);
+    glow.addColorStop(0, 'rgba(255,220,140,' + 0.55 * f + ')');
+    glow.addColorStop(0.5, 'rgba(255,150,40,' + 0.3 * f + ')');
+    glow.addColorStop(1, 'rgba(255,90,10,0)');
+    cx2.fillStyle = glow;
     cx2.beginPath();
-    cx2.arc(mxL, myL, 34 * f + 6, 0, Math.PI * 2);
+    cx2.arc(0, 0, glowR, 0, Math.PI * 2);
     cx2.fill();
-    cx2.strokeStyle = 'rgba(255,230,150,' + 0.85 * f + ')';
-    cx2.lineWidth = 3;
-    cx2.lineCap = 'round';
-    for (const sa of [-0.35, 0, 0.35]) {
+
+    const petals = 8;
+    const baseRot = (Math.random() - 0.5) * 0.3;
+    for (let i = 0; i < petals; i++) {
+      const a = baseRot + (i / petals) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+      const dirBoost = Math.max(0, Math.cos(a));
+      const L = (10 + Math.random() * 12 + 50 * dirBoost * dirBoost) * (0.45 + 0.55 * f);
+      const w2 = (3 + Math.random() * 4) * (0.5 + 0.5 * f);
+      cx2.save();
+      cx2.rotate(a);
+      const lg = cx2.createLinearGradient(0, 0, L, 0);
+      lg.addColorStop(0, 'rgba(255,255,235,' + 0.9 * f + ')');
+      lg.addColorStop(0.35, 'rgba(255,205,90,' + 0.75 * f + ')');
+      lg.addColorStop(1, 'rgba(255,110,10,0)');
+      cx2.fillStyle = lg;
       cx2.beginPath();
-      cx2.moveTo(mxL + 4, myL);
-      cx2.lineTo(mxL + (24 + 26 * f) * Math.cos(sa), myL + (24 + 26 * f) * Math.sin(sa));
-      cx2.stroke();
+      cx2.moveTo(0, -w2);
+      cx2.quadraticCurveTo(L * 0.5, -w2 * 0.55, L, 0);
+      cx2.quadraticCurveTo(L * 0.5, w2 * 0.55, 0, w2);
+      cx2.closePath();
+      cx2.fill();
+      cx2.restore();
     }
+
+    const coreR = 6 + 7 * f;
+    const core = cx2.createRadialGradient(0, 0, 0, 0, 0, coreR);
+    core.addColorStop(0, 'rgba(255,255,255,' + 0.95 * f + ')');
+    core.addColorStop(0.6, 'rgba(255,240,190,' + 0.8 * f + ')');
+    core.addColorStop(1, 'rgba(255,190,80,0)');
+    cx2.fillStyle = core;
+    cx2.beginPath();
+    cx2.arc(0, 0, coreR, 0, Math.PI * 2);
+    cx2.fill();
+
+    cx2.restore();
   }
   cx2.restore();
 }
 
 const muzzleFlashes = [];
+const smokes = [];
 
 function addMuzzleFlash(x, y) {
   muzzleFlashes.push({ x, y, s: 1 });
   if (muzzleFlashes.length > 3) muzzleFlashes.shift();
+  for (let i = 0; i < 3; i++) {
+    smokes.push({
+      x: x + (Math.random() - 0.5) * 10,
+      y: y + (Math.random() - 0.5) * 10,
+      vx: (Math.random() - 0.5) * 1.2,
+      vy: -0.5 - Math.random() * 0.8,
+      r: 5 + Math.random() * 5,
+      life: 1,
+    });
+  }
   if (fireActive < 45) fireActive = 45;
   ensureHeatCapture();
+}
+
+function updateSmokes() {
+  for (let i = smokes.length - 1; i >= 0; i--) {
+    const s = smokes[i];
+    s.x += s.vx;
+    s.y += s.vy;
+    s.vx *= 0.985;
+    s.r += 0.35;
+    s.life -= 0.018;
+    if (s.life <= 0) smokes.splice(i, 1);
+  }
+}
+
+function drawSmokes() {
+  if (!smokes.length) return;
+  ctx.save();
+  for (const s of smokes) {
+    ctx.fillStyle = 'rgba(170,170,175,' + (0.15 * s.life) + ')';
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
 }
 
 function sampleScreenColors(x, y) {
@@ -1332,6 +1397,7 @@ function update() {
     muzzleFlashes[i].s *= 0.86;
     if (muzzleFlashes[i].s < 0.03) muzzleFlashes.splice(i, 1);
   }
+  updateSmokes();
   if (!remoteMode && myWhipType === 'gun' && whip && !dropping) updateGun(now);
 
   if (!whip && remoteWhips.size === 0 && hadContent) {
@@ -1596,6 +1662,7 @@ function draw() {
     drawWhipName(whip, myName, myColor);
   }
   for (const bl of bullets) drawBullet(ctx, bl);
+  drawSmokes();
   drawSparks();
   drawFire();
 }
